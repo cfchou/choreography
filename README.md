@@ -7,7 +7,7 @@ author: Chifeng Chou
 Overview
 --------
 
-Extensible benchmark framework
+Extensible MQTT benchmark/simulation framework
 
 Installation / Usage
 --------------------

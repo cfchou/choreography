@@ -42,16 +42,13 @@ class LauncherResp(object):
 
 
 class RunnerContext(object):
-    def __init__(self, host: str, history: List[RunnerHistoryItem],
-                 history_len_kept=1):
+    def __init__(self, host: str, history: List[RunnerHistoryItem]):
         self.host = host
         self._history = [] if history is None else history
-        self._history_len_kept = 1 if history_len_kept < 1 else history_len_kept
         self.opaque = None
 
-    def append_history(self, prev_resp: LauncherResp, history: RunnerHistoryItem):
-        self._history.append(history)
-        self._history = self._history[:-self._history_len_kept]
+    def update(self, prev_resp: LauncherResp, history: List[RunnerHistoryItem]):
+        self._history = history
         self.opaque = prev_resp.opaque
 
     @staticmethod
@@ -85,6 +82,6 @@ class OneShotLancher(Launcher):
         else:
             #return LauncherResp(Fire(rate=1, start=0, end=10, supervisor=''),
             #                    opaque=1)
-            return LauncherResp(Fire(rate=10, duration=5, supervisor=''),
+            return LauncherResp(Fire(rate=1, duration=1, supervisor=''),
                                 opaque=1)
 

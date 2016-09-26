@@ -21,7 +21,9 @@ log = logging.getLogger(__name__)
 
 async def _do_fire(loop, fire: lc.Fire):
     log.debug('_do_fire for {} secs'.format(fire.duration))
+    history = []
     for i in range(0, fire.duration):
+        fire_at = loop.time()
         log.debug('_do_fire for {}/sec'.format(fire.rate))
         cs = [MQTTClient() for i in range(0, fire.rate)]
         fire_coros = [c.connect(uri='mqtt://127.0.0.1:1883') for c in cs]
@@ -29,14 +31,15 @@ async def _do_fire(loop, fire: lc.Fire):
         coro = asyncio.wait(fire_coros, loop=loop, timeout=3)
         done, not_done = await coro
         log.debug('done:{}, not_done:{}'.format(len(done), len(not_done)))
-    return 'done'
+        history.append(lc.RunnerHistoryItem(at=fire_at, succeeded=len(done)-1,
+                                            failed=len(not_done)))
+    return history
 
 
 async def create_clients(launcher, loop=None):
     if loop is None:
         loop = asyncio.get_event_loop()
     ctx = lc.RunnerContext.new_conext()
-    base = loop.time()
     while True:
         log.debug("ask_next...")
         resp = launcher.ask_next(ctx)
@@ -45,16 +48,15 @@ async def create_clients(launcher, loop=None):
         before = loop.time()
         log.debug('before:{}'.format(before))
         if resp.is_fire():
-            res = await _do_fire(loop, resp.action)
-            log.debug(res)
+            history = await _do_fire(loop, resp.action)
+            log.debug('len(hist):{}'.format(len(history)))
             after = loop.time()
             log.debug('after:{}'.format(after))
         else:
             # TODO: Idle might be removed
             # keep the loop incomplete
             asyncio.sleep(1, loop=loop)
-        ctx.append_history(resp,
-                           lc.RunnerHistoryItem(at=before, succeeded=1, failed=0))
+        ctx.update(resp, history)
 
 
 async def sleeper():

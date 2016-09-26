@@ -20,7 +20,7 @@ dependency_links = [x.strip().replace('git+', '') for x in all_reqs if 'git+' no
 setup(
     name='choreography',
     version=__version__,
-    description='Extensible MQTT benchmark framework',
+    description='Extensible MQTT benchmark/simulation framework',
     long_description=long_description,
     url='https://github.com/cfchou/choreography',
     download_url='https://github.com/cfchou/choreography/tarball/' + __version__,
