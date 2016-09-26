@@ -2,7 +2,7 @@
 import sys
 import asyncio
 import os
-from hbmqtt.client import MQTTClient, ConnectException
+from hbmqtt.client import MQTTClient, ConnectException, ClientException
 from hbmqtt.errors import MQTTException
 from hbmqtt.version import get_version
 from docopt import docopt
@@ -76,10 +76,21 @@ def run():
     loop.run_until_complete(asyncio.wait([runner, sleeper()]))
 
 
+async def foo():
+    await asyncio.sleep(5)
+    raise ClientException('WWWWW')
+    #raise Exception('WWWWW')
+
+def run2():
+    loop = asyncio.get_event_loop()
+    loop.run_until_complete(asyncio.wait([foo(), sleeper()]))
+
+
+
 if __name__ == '__main__':
     with open('log_config.yaml') as fh:
         try:
             logging.config.dictConfig(yaml.load(fh))
-            run()
+            run2()
         finally:
             logging.shutdown()
