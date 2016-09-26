@@ -1,0 +1,25 @@
+version: 1
+handlers:
+  console:
+    class: logging.StreamHandler
+    stream: ext://sys.stderr
+    formatter: basic
+  file:
+    class: logging.FileHandler
+    filename: debug.log
+    encoding: utf-8
+    formatter: basic
+formatters:
+  basic:
+    style: "{"
+    format: "{levelname:s}:{name:s}:{message:s}"
+loggers:
+  choreography:
+    handlers: [console, file]
+    level: DEBUG
+  hbmqtt:
+    handlers: [console, file]
+    level: INFO
+  __main__:
+    handlers: [console, file]
+    level: DEBUG
