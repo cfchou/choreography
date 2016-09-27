@@ -10,8 +10,9 @@ from docopt import docopt
 from hbmqtt.mqtt.constants import QOS_0
 from hbmqtt.utils import read_yaml_config
 import types
+from stevedore import extension
 
-from choreography import launcher as lc
+from choreography.launcher import Fire, RunnerHistoryItem, RunnerContext, OneShotLancher
 import yaml
 import logging.config
 import logging
@@ -38,7 +39,7 @@ class CgClient(MQTTClient):
             return connack.SERVER_UNAVAILABLE
 
 
-async def _do_fire(loop, fire: lc.Fire):
+async def _do_fire(loop, fire: Fire):
     #async def connect_nothrow(c):
     #    try:
     #        return await c.connect(uri='mqtt://127.0.0.1:1883')
@@ -65,7 +66,7 @@ async def _do_fire(loop, fire: lc.Fire):
         succeeded = len([d for d in done
                          if d.result() != connack.SERVER_UNAVAILABLE]) - 1
         log.debug('done:{}, succeeded:{}'.format(len(done), succeeded))
-        history.append(lc.RunnerHistoryItem(at=fire_at, succeeded=succeeded,
+        history.append(RunnerHistoryItem(at=fire_at, succeeded=succeeded,
                                             failed=fire.rate-succeeded))
     return history
 
@@ -73,7 +74,7 @@ async def _do_fire(loop, fire: lc.Fire):
 async def create_clients(launcher, loop=None):
     if loop is None:
         loop = asyncio.get_event_loop()
-    ctx = lc.RunnerContext.new_conext()
+    ctx = RunnerContext.new_conext()
     while True:
         log.debug("ask_next...")
         resp = launcher.ask_next(ctx)
@@ -101,13 +102,42 @@ async def sleeper():
 
 
 def run():
-    launcher = lc.OneShotLancher()
+    launcher = OneShotLancher()
     loop = asyncio.get_event_loop()
     runner = asyncio.ensure_future(create_clients(loop=loop, launcher=launcher),
                                    loop=loop)
 
     log.debug("run")
     loop.run_until_complete(asyncio.wait([runner, sleeper()]))
+
+
+def run3():
+    with open('launchers.yaml') as fh:
+        try:
+            launcher_config = yaml.load(fh)
+            launchers_mgr = extension.ExtensionManager(
+                namespace='choreography.launcher_plugins')
+            log.info('available launcher_plugins:{}'.format(
+                launchers_mgr.extensions))
+
+            def new_launcher_plugin(lc):
+                exts = [ext for ext in launchers_mgr.extensions
+                        if ext.name == lc['entry']]
+                if len(exts) == 0:
+                    log.error('plugin {} doesn\'t exist'.format(lc['entry']))
+                    return None
+                if len(exts) > 1:
+                    log.error('duplicated plugins {} found'.format(lc['entry']))
+                    return None
+                return exts[0].plugin(lc['args'])
+
+            launchers = [new_launcher_plugin(launcher)
+                         for launcher in launcher_config['launchers']]
+
+
+        except Exception as e:
+            pass
+
 
 
 async def foo():

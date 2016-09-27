@@ -36,5 +36,11 @@ setup(
     author='Chifeng Chou',
     install_requires=install_requires,
     dependency_links=dependency_links,
-    author_email='cfchou@gmail.com'
+    author_email='cfchou@gmail.com',
+    entry_points={
+        #'console_scripts': ['choreograph=choreography.scripts.choreograph:main'],
+        'choreography.launcher_plugins': [
+            'LinearLauncher = choreography.launcher_plugins.linear:LinearLauncher'
+        ]
+    }
 )

@@ -1,4 +1,5 @@
 version: 1
+
 handlers:
   console:
     class: logging.StreamHandler
@@ -9,12 +10,17 @@ handlers:
     filename: debug.log
     encoding: utf-8
     formatter: basic
+
 formatters:
   basic:
     style: "{"
     format: "{asctime:s}:{levelname:s}:{filename:s}:{lineno:d}:{message:s}"
+
 loggers:
   choreography:
+    handlers: [console, file]
+    level: DEBUG
+  choreography.launcher_plugins:
     handlers: [console, file]
     level: DEBUG
   hbmqtt:
