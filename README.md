@@ -12,15 +12,9 @@ Extensible MQTT benchmark/simulation framework
 Installation / Usage
 --------------------
 
-To install use pip:
-
-    $ pip install choreography
+TBD
 
 
-Or clone the repo:
-
-    $ git clone https://github.com/cfchou/choreography.git
-    $ python setup.py install
     
 Contributing
 ------------
