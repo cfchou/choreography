@@ -1,6 +1,6 @@
 launchers:
   - name: launcher_1
-    entry: LinearLauncher
+    launcher_plugin: LinearLauncher
     args:
       # total = start + rate * ((end - begin) / step)
       # all args are positive
@@ -12,7 +12,7 @@ launchers:
       start: 0
       supervisor: x
   - name: launcher_2
-    entry: LinearLauncher
+    launcher_plugin: LinearLauncher
     args:
       begin: 5
       end: 6
