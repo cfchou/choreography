@@ -1,26 +1,51 @@
-launchers:
-  - name: launcher_1
-    launcher_plugin: LinearLauncher
-    args:
-      # total = start + rate * ((end - begin) / step)
-      # all args are positive
-      # end > begin
-      begin: 0
-      end: 10
+client:
+  url: mqtts://127.0.0.1
+  keep_alive: 60
+  ping_delay: 1
+  default_qos: 0
+  default_retain: false
+  auto_reconnect: false
+  #reconnect_max_interval: 10
+  #reconnect_retries: 2
+  certfile: /Users/cfchou/Project/veggie/mosca_startup/example/ssl/cert/diamond_cn_INT.crt
+  keyfile: /Users/cfchou/Project/veggie/mosca_startup/example/ssl/key/diamond_cn_INT.key
+  check_hostname: false
+
+
+# It's advised to set up companion anchors which can be inlined by launchers.
+# For each companion anchor, 'plugin' is required by the framework. Others are
+# the plugin's parameters.
+companions:
+  - &idle_1
+      plugin: IdleCompanion
+  - &linear_1
+      plugin: LinearCompanion
       step: 2
-      rate: 1
-      start: 0
-      supervisor: x
-  - name: launcher_2
-    launcher_plugin: LinearLauncher
-    args:
-      begin: 5
-      end: 6
-      step: 1
-      rate: 0
-      start: 10
-      supervisor: x
+      rate: 2
+  - &linear_2 {plugin: LinearCompanion, rate: 1}
 
 
+# For each launcher, 'plugin' and 'name' is required by the framework.
+# 'companions' are usually required except for IdleLauncher.
+# Others are the plugin's parameters.
+# 'companions' contains a list of companion profiles and their names and
+# weights. It's strongly advised to inline companion achors.
+# 'name' must be unique across the whole setting as it's used for logging.
+launchers:
+  - plugin: IdleLauncher
+    name: l1
+  - plugin: LinearLauncher
+    name: l2
+    companions:
+      - companion:
+          # not using an anchor, not good
+          plugin: IdleCompanion
+        name: c1
+        weight: 2
+      - companion:
+          # using an anchor
+          <<: *linear_1
+        name: c2
+        weight: 1
 
 

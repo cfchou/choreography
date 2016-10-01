@@ -14,24 +14,30 @@ ClientHistoryItem = NamedTuple('ClientHistoryItem',
                                [('at', int), ('succeeded', int),
                                 ('failed', int)])
 
+from choreography.choreograph import CgClient
+
 
 class ClientContext(object):
-    def __init__(self, name: str, history: List[ClientHistoryItem],
+    def __init__(self, client: CgClient, history: List[ClientHistoryItem],
                  opaque=None):
-        self.name = name
-        self.history = [] if history is None else history
+        self.client = client
+        self._history = [] if history is None else history
         self.opaque = opaque
 
+    def update(self, prev_resp: CompanionResp, history: List[ClientHistoryItem]):
+        self._history = history
+        self.opaque = prev_resp.opaque
 
-class SupervisorResp(object):
+
+class CompanionResp(object):
     def __init__(self, action: Union[Fire, Idle, Terminate], opaque=None):
         self.action = action
         self.opaque = opaque
 
 
-class Supervisor(metaclass=abc.ABCMeta):
+class Companion(metaclass=abc.ABCMeta):
     @abc.abstractmethod
-    def ask_next(self, client_ctx: ClientContext=None) -> SupervisorResp:
+    def ask(self, client_ctx: ClientContext=None) -> CompanionResp:
         """
 
         :param client_ctx:
@@ -39,4 +45,6 @@ class Supervisor(metaclass=abc.ABCMeta):
         """
 
 
-
+class IdleCompanion(Companion):
+    def ask(self, client_ctx: ClientContext = None) -> CompanionResp:
+        return CompanionResp(Idle())
