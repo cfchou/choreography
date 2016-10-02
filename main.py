@@ -1,4 +1,4 @@
-
+# vim:fileencoding=utf-8
 import sys
 import asyncio
 import copy
@@ -38,7 +38,7 @@ def run():
 
 
 def run3():
-    launchers = load_launchers('launchers.yaml')
+    launchers = load_launchers('runner.yaml')
     loop = asyncio.get_event_loop()
     loop.run_until_complete(asyncio.wait([launcher_runner(launcher=lc)
                                           for lc in launchers]))

@@ -1,4 +1,4 @@
-
+# vim:fileencoding=utf-8
 
 class CgException(Exception):
     pass

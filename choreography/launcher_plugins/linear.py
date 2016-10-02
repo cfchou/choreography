@@ -1,4 +1,4 @@
-
+# vim:fileencoding=utf-8
 from choreography.cg_launcher import Launcher, RunnerContext, LauncherResp
 from choreography.cg_launcher import Fire, Terminate, RunnerHistoryItem
 
@@ -19,8 +19,8 @@ class LinearLauncher(Launcher):
     """
     Monotonically linearly increase the number of clients
     """
-    def __init__(self, config):
-        super().__init__(config)
+    def __init__(self, name, config):
+        super().__init__(name, config)
         # sanity check
         assert self.config.get('launcher_plugin') == self.__class__.__name__
 

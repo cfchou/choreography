@@ -1,20 +1,39 @@
-
+# vim:fileencoding=utf-8
 import abc
 from typing import List, Union, NamedTuple
+from choreography.choreograph import CgClient
 import logging
 log = logging.getLogger(__name__)
 
 
-Fire = NamedTuple('Fire', [('rate', int), ('start', int), ('end', int)])
-Idle = NamedTuple('Idle', [])
+Idle = NamedTuple('Idle', [('elapse', int)])
 Terminate = NamedTuple('Terminate', [])
+
+
+class Fire(metaclass=abc.ABCMeta):
+    pass
+
+
+class Subscribe(Fire):
+    def __init__(self, topic, qos, elapse):
+        super().__init__()
+        self.topic = topic
+        self.qos = qos
+        self.elapse = elapse
+
+
+class Publish(Fire):
+    def __init__(self, topic, qos, elapse, msg):
+        super().__init__()
+        self.topic = topic
+        self.qos = qos
+        self.elapse = elapse
+        self.msg = msg
 
 
 ClientHistoryItem = NamedTuple('ClientHistoryItem',
                                [('at', int), ('succeeded', int),
                                 ('failed', int)])
-
-from choreography.choreograph import CgClient
 
 
 class ClientContext(object):

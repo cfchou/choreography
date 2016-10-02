@@ -1,3 +1,4 @@
+# vim:fileencoding=utf-8
 
 import asyncio
 from hbmqtt.client import MQTTClient, ConnectException, ClientException

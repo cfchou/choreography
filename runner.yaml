@@ -1,0 +1,72 @@
+
+name: 'runner_1'
+
+default:
+  # default for mqtt connections, basically hbmqtt client config
+  launchers:
+    url: mqtts://127.0.0.1
+    keep_alive: 60
+    ping_delay: 1
+    default_qos: 0
+    default_retain: false
+    auto_reconnect: false
+    #reconnect_max_interval: 10
+    #reconnect_retries: 2
+    certfile: /Users/cfchou/Project/veggie/mosca_startup/example/ssl/cert/diamond_cn_INT.crt
+    keyfile: /Users/cfchou/Project/veggie/mosca_startup/example/ssl/key/diamond_cn_INT.key
+    check_hostname: false
+    will-topic: WILL_TOPIC
+    will-message: WILL_MESSAGE
+    will-qos: 1
+    will-retain: false
+
+
+
+# It's advised to set up companion anchors which can be referred by launchers.
+# For each companion anchor, 'plugin' is required by the framework. 'args' is
+# the plugin's parameters.
+companions:
+  - &idle_1
+      plugin: IdleCompanion
+  - &pub_1
+      plugin: LinearPubCompanion
+      args:
+        step: 2
+        rate: 2
+        topic: test_000
+        msg: xyz
+  - &sub_1
+      plugin: SubCompanion
+      args:
+        topics: [test_000]
+
+
+# 1. For each launcher, 'plugin' and 'name' is required by the framework.
+# 2. 'companions' are usually required unless the launcher such as IdleLauncher
+#    doesn't need it.
+# 3. 'args' are the plugin's parameters.
+# 4. 'companions' contains a list of companion profiles and their names and
+#     weights. It's strongly advised to inline companions by achors instead of
+#     explicitly writing ones.
+# 5. 'name' must be unique across the whole file.
+launchers:
+  - plugin: IdleLauncher
+    name: l1
+  - plugin: LinearLauncher
+    name: l2
+    args:
+      # overwrite default
+      will-topic: WILL_TOPIC_1
+      will-message: WILL_MESSAGE_1
+      will-retain: true
+    companions:
+      - companion:
+          # not using an anchor, works but not good
+          plugin: IdleCompanion
+        name: c1
+        weight: 2
+      - companion:
+          # using an anchor
+          <<: *pub_1
+        name: c2
+        weight: 1
