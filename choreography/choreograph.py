@@ -5,9 +5,10 @@ from hbmqtt.client import MQTTClient, ConnectException, ClientException
 from hbmqtt.mqtt import connack
 
 from choreography import cg_launcher
-from choreography.cg_launcher import RunnerHistoryItem, RunnerContext
+from choreography.cg_launcher import RunnerHistoryItem
 from choreography.cg_launcher import Launcher
 from choreography.cg_companion import Companion
+from choreography.cg_util import RunnerContext, PluginConf
 from typing import List
 import logging
 log = logging.getLogger(__name__)
@@ -58,6 +59,14 @@ async def _do_fire(companions_conf, companion_mgr,
 
 async def _do_idle(idle: cg_launcher.Idle, loop=None):
     await asyncio.sleep(idle.steps * idle.num_steps)
+
+
+async def launcher_runner2(launcher: Launcher,
+                           companion_plugins: List[PluginConf],
+                           loop: asyncio.BaseEventLoop=None):
+    if loop is None:
+        loop = asyncio.get_event_loop()
+
 
 
 async def launcher_runner(companions_conf, companion_mgr,

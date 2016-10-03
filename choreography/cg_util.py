@@ -100,7 +100,7 @@ def validate_runner_conf(conf):
 
 
 class PluginConf(object):
-    def __init__(self, name: str, plugin: str, plugin_args: dict):
+    def __init__(self, name: str, plugin, plugin_args: dict):
         self.name = name
         self.plugin = plugin
         self.plugin_args = plugin_args
@@ -140,5 +140,44 @@ class RunnerContext(object):
         return RunnerContext(runner_conf['name'], runner_conf.get('default'),
                              lmgr, cmgr, launchers_plugin_conf,
                              companions_plugin_conf)
+
+
+    @staticmethod
+    def build2(runner_yaml: str):
+        runner_conf = load_yaml(runner_yaml)
+        validate_runner_conf(runner_conf)
+        lmgr, cmgr = load_plugins(runner_conf['launchers'])
+        launchers_default = deep_get(runner_conf, {},'default', 'launcher')
+
+        launcher_plugins = []
+        launcher_companion_plugins = {}
+        def find_plugin(mgr, plugin_name):
+            ps = [e.plugin for e in mgr.extensions if e.name == plugin_name]
+            if len(ps) != 1:
+                raise CgException('number of plugin {}: {}'.
+                                  format(plugin_name, len(ps)))
+            return ps[0]
+
+        for lc in runner_conf['launchers']:
+            # locally overwrite default
+            lc_args = copy.deepcopy(launchers_default)
+            lc_args.update(lc.get('args', {}))
+            launcher_plugins.append(PluginConf(lc['name'],
+                                               find_plugin(lmgr, lc['plugin']),
+                                               lc_args))
+            launcher_companion_plugins[lc['name']] = \
+                [PluginConf(cc['name'], find_plugin(cmgr, cc['plugin']),
+                        cc.get('args', {})) for cc in lc.get('companions', [])]
+
+
+
+            companions_plugin_conf[lc['name']] = \
+                [PluginConf(cc['name'], cc['plugin'], cc.get('args', {}))
+                 for cc in lc.get('companions', [])]
+
+        return RunnerContext(runner_conf['name'], runner_conf.get('default'),
+                             lmgr, cmgr, launchers_plugin_conf,
+                             companions_plugin_conf)
+
 
 
