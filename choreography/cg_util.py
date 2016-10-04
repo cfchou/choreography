@@ -7,8 +7,10 @@ from choreography.cg_util import ideep_get
 from choreography.cg_exception import CgException
 from stevedore.named import NamedExtensionManager
 from typing import List, Union, NamedTuple, Tuple, Dict
-from choreography.cg_launcher import Launcher
+from choreography.cg_launcher import Launcher, LauncherCmdResp
 from choreography.cg_companion import Companion
+import uuid
+import asyncio
 import logging
 log = logging.getLogger(__name__)
 
@@ -39,12 +41,6 @@ def load_launchers(yaml_conf, launcher_mgr) -> List[Launcher]:
         return exts[0].plugin(conf)
     return [new_launcher(lc, yaml_conf['default'])
             for lc in yaml_conf['launchers']]
-
-
-# launcher
-
-def load_companions(companions_conf, companion_mgr) -> List[Companion]:
-    pass
 
 
 def load_plugins(launchers_conf) \
@@ -108,49 +104,24 @@ class PluginConf(object):
 
 class RunnerContext(object):
     def __init__(self, name: str, default: dict,
-                 launcher_mgr: NamedExtensionManager,
-                 companion_mgr: NamedExtensionManager,
-                 launchers_plugin_conf: Dict[str, PluginConf],
-                 companions_plugin_conf: Dict[str, List[PluginConf]]):
+                 launcher_plugins: [PluginConf],
+                 launcher_companion_plugins: Dict[str, List[PluginConf]],
+                 loop=None):
+        lp_names = launcher_companion_plugins.keys()
+        if any([lp.name not in lp_names for lp in launcher_plugins]):
+            raise CgException('missing companion plugins')
+
         self.name = name
         self.default = default
-        self.launcher_mgr = launcher_mgr
-        self.companion_mgr = companion_mgr
-        self.launchers_plugin_conf = launchers_plugin_conf
-        self.companions_plugin_conf = companions_plugin_conf
+        self.launcher_plugins = launcher_plugins
+        self.launcher_companion_plugins = launcher_companion_plugins
 
     @staticmethod
-    def build(runner_yaml: str):
+    def build(runner_yaml: str, name: str = None):
         runner_conf = load_yaml(runner_yaml)
         validate_runner_conf(runner_conf)
         lmgr, cmgr = load_plugins(runner_conf['launchers'])
-        launchers_default = deep_get(runner_conf, {},'default', 'launcher')
-
-        launchers_plugin_conf = {}
-        companions_plugin_conf = {}
-        for lc in runner_conf['launchers']:
-            lc_args = copy.deepcopy(launchers_default)
-            # locally overwrite default
-            launchers_plugin_conf[lc['name']] = \
-                PluginConf(lc['name'], lc['plugin'], lc_args)
-            companions_plugin_conf[lc['name']] = \
-                [PluginConf(cc['name'], cc['plugin'], cc.get('args', {}))
-                 for cc in lc.get('companions', [])]
-
-        return RunnerContext(runner_conf['name'], runner_conf.get('default'),
-                             lmgr, cmgr, launchers_plugin_conf,
-                             companions_plugin_conf)
-
-
-    @staticmethod
-    def build2(runner_yaml: str):
-        runner_conf = load_yaml(runner_yaml)
-        validate_runner_conf(runner_conf)
-        lmgr, cmgr = load_plugins(runner_conf['launchers'])
-        launchers_default = deep_get(runner_conf, {},'default', 'launcher')
-
-        launcher_plugins = []
-        launcher_companion_plugins = {}
+        launchers_default = deep_get(runner_conf, {}, 'default', 'launcher')
         def find_plugin(mgr, plugin_name):
             ps = [e.plugin for e in mgr.extensions if e.name == plugin_name]
             if len(ps) != 1:
@@ -158,6 +129,8 @@ class RunnerContext(object):
                                   format(plugin_name, len(ps)))
             return ps[0]
 
+        launcher_plugins = []
+        launcher_companion_plugins = {}
         for lc in runner_conf['launchers']:
             # locally overwrite default
             lc_args = copy.deepcopy(launchers_default)
@@ -169,15 +142,44 @@ class RunnerContext(object):
                 [PluginConf(cc['name'], find_plugin(cmgr, cc['plugin']),
                         cc.get('args', {})) for cc in lc.get('companions', [])]
 
-
-
-            companions_plugin_conf[lc['name']] = \
-                [PluginConf(cc['name'], cc['plugin'], cc.get('args', {}))
-                 for cc in lc.get('companions', [])]
-
+        if name is None:
+            name = runner_conf.get('name', uuid.uuid1())
         return RunnerContext(runner_conf['name'], runner_conf.get('default'),
-                             lmgr, cmgr, launchers_plugin_conf,
-                             companions_plugin_conf)
+                             launcher_plugins, launcher_companion_plugins)
+
+    async def run(self, loop: asyncio.BaseEventLoop=None):
+        if loop is None:
+            loop = asyncio.get_event_loop()
+        coros = []
+        for lp in self.launcher_plugins:
+            lc = lp.plugin(lp.name, lp.args)
+            coro = launcher_runner(lc, self.launcher_companion_plugins[lp.name],
+                                   loop)
+            coros.append(coro)
+        await asyncio.wait(coros)
 
 
-
+async def launcher_runner(launcher: Launcher,
+                          companion_plugins: List[PluginConf],
+                          loop: asyncio.BaseEventLoop=None):
+    if loop is None:
+        loop = asyncio.get_event_loop()
+    cmd_resp = LauncherCmdResp()
+    while True:
+        log.debug("ask...")
+        cmd = launcher.ask(cmd_resp)
+        if cmd.is_terminate():
+            log.debug('Terminate')
+            break
+        if cmd.is_idle():
+            await _do_idle(cmd.action, loop)
+            continue
+        # cmd.is_fire
+        before = loop.time()
+        log.debug('before:{}'.format(before))
+        history = await _do_fire(companions_conf, companion_mgr, resp.action,
+                                 loop)
+        log.debug('len(hist):{}'.format(len(history)))
+        after = loop.time()
+        log.debug('after:{}'.format(after))
+        cmd_resp.update(cmd, history)

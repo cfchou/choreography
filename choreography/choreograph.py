@@ -61,14 +61,6 @@ async def _do_idle(idle: cg_launcher.Idle, loop=None):
     await asyncio.sleep(idle.steps * idle.num_steps)
 
 
-async def launcher_runner2(launcher: Launcher,
-                           companion_plugins: List[PluginConf],
-                           loop: asyncio.BaseEventLoop=None):
-    if loop is None:
-        loop = asyncio.get_event_loop()
-
-
-
 async def launcher_runner(companions_conf, companion_mgr,
                           launcher: Launcher,
                           ctx: RunnerContext=None,
