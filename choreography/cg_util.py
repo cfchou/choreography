@@ -144,8 +144,8 @@ class RunnerContext(object):
 
         if name is None:
             name = runner_conf.get('name', uuid.uuid1())
-        return RunnerContext(runner_conf['name'], runner_conf.get('default'),
-                             launcher_plugins, launcher_companion_plugins)
+        return RunnerContext(name, runner_conf.get('default'), launcher_plugins,
+                             launcher_companion_plugins)
 
     async def run(self, loop: asyncio.BaseEventLoop=None):
         if loop is None:
