@@ -15,7 +15,9 @@ log = logging.getLogger(__name__)
 
 
 class CgClient(MQTTClient):
-    def __init__(self, client_id=None, config=None, loop=None):
+
+    def __init__(self, companion_plugins: List[PluginConf]=[],
+                 client_id=None, config=None, loop=None):
         default_config = {
             'auto_reconnect': False
         }

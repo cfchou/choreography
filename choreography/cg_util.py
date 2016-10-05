@@ -3,15 +3,20 @@ import functools
 import copy
 import pprint
 import yaml
+from hbmqtt.mqtt import connack
 from choreography.cg_util import ideep_get
 from choreography.cg_exception import CgException
 from stevedore.named import NamedExtensionManager
 from typing import List, Union, NamedTuple, Tuple, Dict
-from choreography.cg_launcher import Launcher, LauncherCmdResp
+from choreography import cg_launcher
+from choreography.cg_launcher import Launcher
+from choreography.cg_launcher import LauncherCmdResp, LauncherCmdRespItem
 from choreography.cg_companion import Companion
+from choreography.choreograph import CgClient
 import uuid
 import asyncio
 import logging
+
 log = logging.getLogger(__name__)
 
 
@@ -122,6 +127,7 @@ class RunnerContext(object):
         validate_runner_conf(runner_conf)
         lmgr, cmgr = load_plugins(runner_conf['launchers'])
         launchers_default = deep_get(runner_conf, {}, 'default', 'launcher')
+
         def find_plugin(mgr, plugin_name):
             ps = [e.plugin for e in mgr.extensions if e.name == plugin_name]
             if len(ps) != 1:
@@ -152,11 +158,40 @@ class RunnerContext(object):
             loop = asyncio.get_event_loop()
         coros = []
         for lp in self.launcher_plugins:
-            lc = lp.plugin(lp.name, lp.args)
+            lc = lp.plugin(lp.name, lp.args, loop=loop)
             coro = launcher_runner(lc, self.launcher_companion_plugins[lp.name],
                                    loop)
             coros.append(coro)
         await asyncio.wait(coros)
+
+
+async def _do_fire(companion_plugins: List[PluginConf],
+                   fire: cg_launcher.Fire, loop):
+    log.debug('_do_fire for {} secs'.format(fire.step * fire.num_steps))
+    async def client_connect():
+        conf = await fire.conf_awaitable()
+        cc = CgClient(companion_plugins=companion_plugins, config=conf)
+        return await cc.connect()
+
+    history = []
+    for i in range(0, fire.num_steps):
+        fire_at = loop.time()
+        log.debug('_do_fire {} clients at step {}'.format(fire.rate, i))
+        fire_coros = [client_connect(fire) for i in range(0, fire.rate)]
+        fire_coros.append(asyncio.sleep(fire.step))
+        # NOTE: timeout might surpass fire.step
+        done, _ = await asyncio.wait(fire_coros, loop=loop,
+                                     timeout=fire.timeout)
+        succeeded = len([d for d in done
+                         if d.result() != connack.SERVER_UNAVAILABLE]) - 1
+        log.debug('done:{}, succeeded:{}'.format(len(done), succeeded))
+        history.append(LauncherCmdRespItem(at=fire_at, succeeded=succeeded,
+                                           failed=fire.rate-succeeded))
+    return history
+
+
+async def _do_idle(idle: cg_launcher.Idle, loop=None):
+    await asyncio.sleep(idle.steps * idle.num_steps, loop=loop)
 
 
 async def launcher_runner(launcher: Launcher,
@@ -166,19 +201,19 @@ async def launcher_runner(launcher: Launcher,
         loop = asyncio.get_event_loop()
     cmd_resp = LauncherCmdResp()
     while True:
-        log.debug("ask...")
-        cmd = launcher.ask(cmd_resp)
+        log.debug("ask launcher {}".format(launcher.name))
+        cmd = await launcher.ask(cmd_resp, loop)
         if cmd.is_terminate():
-            log.debug('Terminate')
+            log.debug('terminate launcher {}'.format(launcher.name))
             break
         if cmd.is_idle():
+            log.debug('idle launcher {}'.format(launcher.name))
             await _do_idle(cmd.action, loop)
             continue
         # cmd.is_fire
         before = loop.time()
         log.debug('before:{}'.format(before))
-        history = await _do_fire(companions_conf, companion_mgr, resp.action,
-                                 loop)
+        history = await _do_fire(launcher, companion_plugins, cmd.action, loop)
         log.debug('len(hist):{}'.format(len(history)))
         after = loop.time()
         log.debug('after:{}'.format(after))
