@@ -2,9 +2,14 @@
 name: 'runner_1'
 
 default:
-  # default for mqtt connections, basically hbmqtt client config
+  # default for MqttClient connections, basically hbmqtt client config
   launchers:
-    url: mqtts://127.0.0.1
+    broker:
+      uri: mqtts://127.0.0.1
+      #cafile:
+      #capath:
+      #cadata:
+      cleansession: True
     keep_alive: 60
     ping_delay: 1
     default_qos: 0
@@ -15,10 +20,13 @@ default:
     certfile: /Users/cfchou/Project/veggie/mosca_startup/example/ssl/cert/diamond_cn_INT.crt
     keyfile: /Users/cfchou/Project/veggie/mosca_startup/example/ssl/key/diamond_cn_INT.key
     check_hostname: false
-    will-topic: WILL_TOPIC
-    will-message: WILL_MESSAGE
-    will-qos: 1
-    will-retain: false
+    will:
+      topic: WILL_TOPIC
+      message: WILL_MESSAGE
+      qos: 1
+      retain: false
+
+  companions:
 
 
 
@@ -56,9 +64,10 @@ launchers:
     name: l2
     args:
       # overwrite default
-      will-topic: WILL_TOPIC_1
-      will-message: WILL_MESSAGE_1
-      will-retain: true
+      will:
+        topic: WILL_TOPIC_1
+        message: WILL_MESSAGE_1
+        retain: true
     companions:
       - companion:
           # not using an anchor, works but not good

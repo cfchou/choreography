@@ -168,19 +168,27 @@ class RunnerContext(object):
 async def _do_fire(companion_plugins: List[PluginConf],
                    fire: cg_launcher.Fire, loop):
     log.debug('_do_fire for {} secs'.format(fire.step * fire.num_steps))
-    async def client_connect():
-        conf = await fire.conf_awaitable()
-        cc = CgClient(companion_plugins=companion_plugins, config=conf)
-        return await cc.connect()
+    def client_connect():
+        async def _client_connect():
+            conf = await fire.conf_awaitable()
+            cc = CgClient(companion_plugins=companion_plugins, config=conf,
+                          loop=loop)
+            return await cc.connect()
+        fut = asyncio.ensure_future(_client_connect(), loop)
+        #task.add_done_callback(lambda )
+        return fut
 
     history = []
     for i in range(0, fire.num_steps):
         fire_at = loop.time()
         log.debug('_do_fire {} clients at step {}'.format(fire.rate, i))
-        fire_coros = [client_connect(fire) for i in range(0, fire.rate)]
-        fire_coros.append(asyncio.sleep(fire.step))
+        # TODO: weighted fire
+
+        futs = [client_connect() for i in range(0, fire.rate)]
+        futs.append(asyncio.sleep(fire.step))
+
         # NOTE: timeout might surpass fire.step
-        done, _ = await asyncio.wait(fire_coros, loop=loop,
+        done, _ = await asyncio.wait(futs, loop=loop,
                                      timeout=fire.timeout)
         succeeded = len([d for d in done
                          if d.result() != connack.SERVER_UNAVAILABLE]) - 1
