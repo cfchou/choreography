@@ -41,7 +41,11 @@ setup(
     entry_points={
         #'console_scripts': ['choreograph=choreography.scripts.choreograph:main'],
         'choreography.launcher_plugins': [
-            'LinearLauncher = choreography.launcher_plugins.linear:LinearLauncher'
+            #'LinearLauncher = choreography.launcher_plugins.linear:LinearLauncher'
+            'OneShotLauncher = choreography.cg_launcher:OneShotLauncher'
+        ],
+        'choreography.companion_plugins': [
+            'IdleCompanion = choreography.cg_launcher:OneShotLauncher'
         ]
     }
 )

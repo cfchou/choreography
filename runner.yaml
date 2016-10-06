@@ -13,18 +13,18 @@ default:
     keep_alive: 60
     ping_delay: 1
     default_qos: 0
-    default_retain: false
-    auto_reconnect: false
+    default_retain: False
+    auto_reconnect: False
     #reconnect_max_interval: 10
     #reconnect_retries: 2
     certfile: /Users/cfchou/Project/veggie/mosca_startup/example/ssl/cert/diamond_cn_INT.crt
     keyfile: /Users/cfchou/Project/veggie/mosca_startup/example/ssl/key/diamond_cn_INT.key
-    check_hostname: false
+    check_hostname: False
     will:
       topic: WILL_TOPIC
       message: WILL_MESSAGE
       qos: 1
-      retain: false
+      retain: False
 
   companions:
 
@@ -67,7 +67,7 @@ launchers:
       will:
         topic: WILL_TOPIC_1
         message: WILL_MESSAGE_1
-        retain: true
+        retain: True
     companions:
       - companion:
           # not using an anchor, works but not good
