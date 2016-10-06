@@ -163,11 +163,22 @@ class RunnerContext(object):
                 LauncherPluginConf(lc['name'], find_plugin(lmgr, lc['plugin']),
                                    lc_args))
 
-            launcher_companion_plugins[lc['name']] = \
-                [CompanionPluginConf(cc['name'],
-                                     find_plugin(cmgr, cc['plugin']),
-                                     cc.get('args', {}), cc['weight'])
-                 for cc in lc.get('companions', [])]
+            companions = lc.get('companions', [])
+            if sum([1 for c in companions if c.get('weight') is not None]) != \
+                    len(companions):
+                raise CgException('all or none weights')
+
+            cps = []
+            for c in lc.get('companions', []):
+                w = c.get('weight')
+                if w is not None and w < 0:
+                    raise CgException('weight must >= 0')
+                cp = CompanionPluginConf(c['name'],
+                                         find_plugin(cmgr, c['plugin']),
+                                         c.get('args', {}), w)
+                cps.append(cp)
+
+            launcher_companion_plugins[lc['name']] = cps
 
         if name is None:
             name = runner_conf.get('name', uuid.uuid1())
@@ -207,7 +218,16 @@ def random_cdf_index(cdf: list):
 
 def _run_client(companion_plugins: List[CompanionPluginConf],
                 fire: cg_launcher.Fire, loop: BaseEventLoop) -> asyncio.Task:
+
+    ws = sum([1 for cp in companion_plugins if cp.weight is not None])
+    if ws != 0 and ws != len(companion_plugins):
+        raise CgException('all or none weights')
+
     cdf = to_cdf([cp.weight for cp in companion_plugins])
+
+    get_idx = lambda: random_cdf_index(cdf) if ws == 0 else \
+        lambda: random.randrange(0, len(companion_plugins))
+
     async def connect():
         conf = await fire.conf_queue.get()
         cc = CgClient(config=conf, loop=loop)
@@ -228,7 +248,7 @@ def _run_client(companion_plugins: List[CompanionPluginConf],
             log.info('connect is not connected: {}'.format(cc))
             return
         log.info('connect result: {}'.format(cc))
-        i = random_cdf_index(cdf)
+        i = get_idx()
         p = companion_plugins[i].load()
         loop.create_task(cc.run(p))
 
@@ -257,7 +277,7 @@ async def _do_fire(companion_plugins: List[CompanionPluginConf],
         fire_at = loop.time()
         log.debug('_do_fire {} clients at step {}'.format(fire.rate, i))
         futs = [_run_client(companion_plugins, fire, loop)
-                for i in range(0, fire.rate)]
+                for _ in range(0, fire.rate)]
         futs.append(asyncio.sleep(fire.step))
 
         # NOTE: timeout might surpass fire.step
