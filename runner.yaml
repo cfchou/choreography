@@ -3,7 +3,7 @@ name: 'runner_1'
 
 default:
   # default for MqttClient connections, basically hbmqtt client config
-  launchers:
+  launcher:
     broker:
       uri: mqtts://127.0.0.1
       #cafile:
@@ -25,8 +25,9 @@ default:
       message: WILL_MESSAGE
       qos: 1
       retain: False
+    timeout: 10
 
-  companions:
+  companion:
 
 
 

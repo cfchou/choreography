@@ -1,6 +1,5 @@
 # vim:fileencoding=utf-8
 
-import asyncio
 from hbmqtt.client import MQTTClient, ConnectException, ClientException
 from hbmqtt.mqtt import connack
 
@@ -13,7 +12,6 @@ log = logging.getLogger(__name__)
 
 
 class CgClient(MQTTClient):
-
     def __init__(self, client_id=None, config=None,
                  loop: BaseEventLoop=None):
         default_config = {
@@ -36,17 +34,17 @@ class CgClient(MQTTClient):
     def is_connected(self):
         return self.session.transitions.is_connected()
 
-    async def connect(self, uri=None, cleansession=None, cafile=None,
-                      capath=None, cadata=None):
-        try:
-            log.debug('connect to {}'.format(uri))
-            return await super().connect(uri, cleansession, cafile, capath,
-                                         cadata)
-        except ConnectException as e:
-            #log.exception(e)
-            return connack.SERVER_UNAVAILABLE
+    #async def connect(self, uri=None, cleansession=None, cafile=None,
+    #                  capath=None, cadata=None):
+    #    try:
+    #        log.debug('connect to {}'.format(uri))
+    #        return await super().connect(uri, cleansession, cafile, capath,
+    #                                     cadata)
+    #    except ConnectException as e:
+    #        #log.exception(e)
+    #        return connack.SERVER_UNAVAILABLE
 
     async def run(self, companion: Companion):
-        log.debug('{} run...'.format(self.client_id))
+        log.debug('{} run with Companion:{}'.format(self.client_id, companion))
 
 

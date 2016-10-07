@@ -45,7 +45,7 @@ setup(
             'OneShotLauncher = choreography.cg_launcher:OneShotLauncher'
         ],
         'choreography.companion_plugins': [
-            'IdleCompanion = choreography.cg_launcher:OneShotLauncher'
+            'IdleCompanion = choreography.cg_companion:IdleCompanion'
         ]
     }
 )

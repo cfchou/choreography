@@ -1,7 +1,8 @@
 # vim:fileencoding=utf-8
+import asyncio
+from asyncio import BaseEventLoop
 import abc
 from typing import List, Union, NamedTuple
-from choreography.choreograph import CgClient
 import logging
 log = logging.getLogger(__name__)
 
@@ -31,39 +32,32 @@ class Publish(Fire):
         self.msg = msg
 
 
-ClientHistoryItem = NamedTuple('ClientHistoryItem',
-                               [('at', int), ('succeeded', int),
-                                ('failed', int)])
+CpRespItem = NamedTuple('CpRespItem',
+                        [('at', int), ('succeeded', int), ('failed', int)])
 
 
-class ClientContext(object):
-    def __init__(self, client: CgClient, history: List[ClientHistoryItem],
-                 opaque=None):
-        self.client = client
+class CpCmd(object):
+    pass
+
+
+class CpResp(object):
+    def __init__(self, history: List[CpRespItem]=None):
         self._history = [] if history is None else history
-        self.opaque = opaque
+        self.opaque = None
 
-    def update(self, prev_resp: CompanionResp, history: List[ClientHistoryItem]):
+    def update(self, prev_cmd: CpCmd, history: List[CpRespItem]):
         self._history = history
-        self.opaque = prev_resp.opaque
-
-
-class CompanionResp(object):
-    def __init__(self, action: Union[Fire, Idle, Terminate], opaque=None):
-        self.action = action
-        self.opaque = opaque
+        self.opaque = prev_cmd.opaque
+    pass
 
 
 class Companion(metaclass=abc.ABCMeta):
     @abc.abstractmethod
-    def ask(self, client_ctx: ClientContext=None) -> CompanionResp:
+    async def ask(self, resp: CpResp=None) -> CpCmd:
         """
 
-        :param client_ctx:
+        :param resp:
         :return:
         """
 
 
-class IdleCompanion(Companion):
-    def ask(self, client_ctx: ClientContext = None) -> CompanionResp:
-        return CompanionResp(Idle())
