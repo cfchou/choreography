@@ -7,7 +7,7 @@ from choreography.cg_launcher import Launcher, LcResp
 from choreography.cg_companion import Companion
 from choreography.cg_exception import *
 from choreography import cg_util
-from choreography.cg_util import CompanionPluginConf
+from choreography.cg_util import CompanionPluginConf, RunnerContext
 import random
 from typing import List
 import asyncio
@@ -115,7 +115,7 @@ def _run_client(uri: str,
         if plugin_conf is None:
             log.info('skip running because no companion plugs')
             return
-        cp = plugin_conf.load()
+        cp = plugin_conf.new_instance(loop)
         log.debug('use companion {} to run'.format(cp.name))
         loop.create_task(cc.run(cp))
 
@@ -201,4 +201,16 @@ async def launcher_runner(launcher: Launcher,
         after = loop.time()
         log.debug('after:{}'.format(after))
         cmd_resp = LcResp(cmd, succeeded, failed)
+
+
+async def runner_runner(ctx: RunnerContext, loop: BaseEventLoop=None):
+    if loop is None:
+        loop = asyncio.get_event_loop()
+    coros = []
+    for lp_conf in ctx.launcher_plugins:
+        lc = lp_conf.new_instance(loop)
+        cp_confs = ctx.launcher_companion_plugins[lc['name']]
+        coros.append(launcher_runner(lc, cp_confs))
+    await asyncio.wait(coros)
+
 

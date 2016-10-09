@@ -54,9 +54,9 @@ companions:
 # 2. 'companions' are usually required unless the launcher such as IdleLauncher
 #    doesn't need it.
 # 3. 'args' are the plugin's parameters.
-# 4. 'companions' contains a list of companion profiles and their names and
-#     weights. It's strongly advised to inline companions by achors instead of
-#     explicitly writing ones.
+# 4. 'companions' contains a list of companion profiles and their names. It's
+#    strongly advised to inline companions by achors instead of explicitly
+#    writing ones.
 # 5. 'name' must be unique across the whole file.
 launchers:
   - plugin: IdleLauncher
@@ -74,7 +74,7 @@ launchers:
           # not using an anchor, works but not good
           plugin: IdleCompanion
         name: c1
-        weight: 2
+        weight: 1
       - companion:
           # using an anchor
           <<: *pub_1

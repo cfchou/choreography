@@ -1,4 +1,5 @@
 # vim:fileencoding=utf-8
+import abc
 import functools
 import copy
 import pprint
@@ -9,7 +10,7 @@ import uuid
 import asyncio
 from asyncio import BaseEventLoop
 from stevedore.named import NamedExtensionManager, ExtensionManager
-from choreography.cg_exception import CgException
+from choreography.cg_exception import CgException, CgLauncherException
 from choreography.cg_launcher import Launcher
 import logging
 
@@ -35,24 +36,25 @@ def find_plugin(mgr: ExtensionManager, plugin_name):
     return ps[0]
 
 
-def load_launchers(yaml_conf, launcher_mgr) -> List[Launcher]:
-    def new_launcher(lc, default):
-        plugin = lc['plugin']
-        log.info('new_launcher: {}'.format(plugin))
-        exts = [ext for ext in launcher_mgr.extensions if ext.name == plugin]
-        if len(exts) == 0:
-            raise CgException('plugin {} doesn\'t exist'.format(plugin))
-        if len(exts) > 1:
-            raise CgException('duplicated plugins {} found'.format(plugin))
+#def load_launchers(conf, launcher_mgr: ExtensionManager) -> List[Launcher]:
+#    def new_launcher(lc, default):
+#        plugin = lc['plugin']
+#        log.info('new_launcher: {}'.format(plugin))
+#        exts = [ext for ext in launcher_mgr.extensions if ext.name == plugin]
+#        if len(exts) == 0:
+#            raise CgException('plugin {} doesn\'t exist'.format(plugin))
+#        if len(exts) > 1:
+#            raise CgException('duplicated plugins {} found'.
+#                                      format(plugin))
+#
+#        conf = copy.deepcopy(default)
+#        conf.update(lc.get('args', {}))
+#        return exts[0].plugin(conf)
+#    return [new_launcher(lc, conf['default'])
+#            for lc in conf['launchers']]
 
-        conf = copy.deepcopy(default)
-        conf.update(lc.get('args', {}))
-        return exts[0].plugin(conf)
-    return [new_launcher(lc, yaml_conf['default'])
-            for lc in yaml_conf['launchers']]
 
-
-def load_plugins(launchers_conf) \
+def load_plugin_managers(launchers_conf) \
         -> Tuple[NamedExtensionManager, NamedExtensionManager]:
     def on_missing_launcher_plugin(name):
         raise CgException('missing launcher plugin {}'.format(name))
@@ -104,29 +106,42 @@ def validate_runner_conf(conf):
     pass
 
 
-class PluginConf(object):
+class PluginConf(metaclass=abc.ABCMeta):
+    """
+    Check plugin_args used by the framework. Plugin itself should go furthur to
+    check additional plugin_args.
+    """
     def __init__(self, name: str, plugin, plugin_args: dict):
         self.name = name
         self.plugin = plugin
         self.plugin_args = plugin_args
 
-    def load(self):
-        return self.plugin(self.plugin_args)
+    def new_instance(self, loop):
+        return self.plugin(name=self.name, config=self.plugin_args, loop=loop)
 
 
-class PluginConf(PluginConf):
-    pass
+class LauncherPluginConf(PluginConf):
+    def __init__(self, name: str, plugin, plugin_args: dict):
+        msg = ideep_get(plugin_args, 'will', 'message')
+        if not isinstance(msg, bytes):
+            if isinstance(msg, str):
+                plugin_args['will']['message'] = msg.encode('utf-8')
+            else:
+                raise CgException('will message can\'t be encoded to bytes')
+        super().__init__(name, plugin, plugin_args)
 
 
 class CompanionPluginConf(PluginConf):
     def __init__(self, name: str, plugin, plugin_args: dict, weight: int):
+        if weight is not None and not isinstance(weight, int) and weight < 0:
+            raise CgException('weight must an int >= 0')
         super().__init__(name, plugin, plugin_args)
         self.weight = weight
 
 
 class RunnerContext(object):
     def __init__(self, name: str, default: dict,
-                 launcher_plugins: [PluginConf],
+                 launcher_plugins: [LauncherPluginConf],
                  launcher_companion_plugins: Dict[str, List[CompanionPluginConf]],
                  loop: BaseEventLoop=None):
         lp_names = launcher_companion_plugins.keys()
@@ -143,17 +158,17 @@ class RunnerContext(object):
     def build(runner_yaml: str, name: str = None):
         runner_conf = load_yaml(runner_yaml)
         validate_runner_conf(runner_conf)
-        lmgr, cmgr = load_plugins(runner_conf['launchers'])
+        lmgr, cmgr = load_plugin_managers(runner_conf['launchers'])
         launchers_default = deep_get(runner_conf, {}, 'default', 'launcher')
+        companions_default = deep_get(runner_conf, {}, 'default', 'companion')
 
         launcher_plugins = []
         launcher_companion_plugins = {}
         for lc in runner_conf['launchers']:
-            # locally overwrite default
             lc_args = copy.deepcopy(launchers_default)
             lc_args.update(lc.get('args', {}))
             lp = find_plugin(lmgr, lc['plugin'])
-            launcher_plugins.append(PluginConf(lc['name'], lp, lc_args),
+            launcher_plugins.append(LauncherPluginConf(lc['name'], lp, lc_args),
                                     lc_args)
 
             companions = lc.get('companions', [])
@@ -161,14 +176,14 @@ class RunnerContext(object):
                              if c.get('weight') is not None])
             if n_weights != 0 and n_weights != len(companions):
                 raise CgException('all or none weights')
+
             cps = []
             for c in lc.get('companions', []):
-                w = c.get('weight')
-                if w is not None and w < 0:
-                    raise CgException('weight must >= 0')
+                c_args = copy.deepcopy(companions_default)
+                c_args.update(c.get('args', {}))
                 cp = CompanionPluginConf(c['name'],
                                          find_plugin(cmgr, c['plugin']),
-                                         c.get('args', {}), w)
+                                         c.get('args', {}), c.get('weight'))
                 cps.append(cp)
 
             launcher_companion_plugins[lc['name']] = cps
@@ -208,20 +223,24 @@ def cdf_from_cd(cd: list, x: int=None) -> int:
     """
     A CDF(cumulative distribution function) parameterized by a cumulative
     distribution.
-    If 'x' is None or <= 0, x = randrange(1, cd[-1])
-    Otherwise, x %= cd[-1].
+    If 'x' is None or <= 0, x = randrange(1, cd[-1] + 1)
+    Otherwise, x = x % cd[-1] + 1.
 
-    :param cd:
+    :param cd: should be a monotonically increasing list of positive integers.
+               Only a prefix of elements can be 0. However, we won't validate it
+               thoroughly.
     :param x:
     :return:
     """
-    if cd is None or len(cd) < 0:
+    if cd is None or len(cd) == 0:
+        raise CgException('invalid cd {}'.format(cd))
+    if cd[-1] <= 0:
         raise CgException('invalid cd {}'.format(cd))
 
     if x is None or x <= 0:
-        x = random.randrange(1, cd[-1])
+        x = random.randrange(1, cd[-1] + 1)
     else:
-        x %= len(cd[-1])
+        x = x % len(cd[-1]) + 1
     for i, v in enumerate(cd):
         if x > v:
             return i

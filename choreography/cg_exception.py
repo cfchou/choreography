@@ -5,7 +5,7 @@ class CgException(Exception):
     pass
 
 
-class LauncherException(CgException):
+class CgLauncherException(CgException):
     pass
 
 

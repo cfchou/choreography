@@ -33,7 +33,7 @@ config = {
             'check_hostname': False,
             'will': {
                 'topic': 'WILL_TOPIC',
-                'message': 'WILL_MESSAGE',
+                'message': b'WILL_MESSAGE',
                 'qos': 1,
                 'retain': False
             },
@@ -65,7 +65,7 @@ def test_launcher_runner():
     loop = asyncio.get_event_loop()
 
     tasks = asyncio.wait([launcher_runner(lc, companion_plugins=[]),
-                         asyncio.sleep(3)])
+                         asyncio.sleep(20)])
     loop.run_until_complete(tasks)
     print('*****Done*****')
 
