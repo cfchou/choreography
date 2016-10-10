@@ -49,7 +49,7 @@ config = {
             'plugin': 'OneShotLauncher',
             'name': 'one_001',
             'args': {
-                'rate': 1,
+                'rate': 500,
                 'duration': 1,
                 'timeout': 3
             }
@@ -65,7 +65,7 @@ def test_launcher_runner():
     loop = asyncio.get_event_loop()
 
     tasks = asyncio.wait([launcher_runner(lc, companion_plugins=[]),
-                         asyncio.sleep(20)])
+                         asyncio.sleep(60)])
     loop.run_until_complete(tasks)
     print('*****Done*****')
 

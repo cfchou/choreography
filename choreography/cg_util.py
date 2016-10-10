@@ -75,7 +75,7 @@ def load_plugin_managers(launchers_conf) \
         companions = lc.get('companions', [])
         companion_names = set([c['name'] for c in companions])
         if len(names & companion_names) != 0:
-            raise CgException('names should be globally unique')
+            raise CgException('name should be globally unique')
 
         names |= companion_names
         companion_plugins |= set([ideep_get(c, 'companion', 'plugin')
@@ -106,36 +106,42 @@ def validate_runner_conf(conf):
     pass
 
 
-class PluginConf(metaclass=abc.ABCMeta):
+class PluginConf(abc.ABC):
     """
-    Check plugin_args used by the framework. Plugin itself should go furthur to
-    check additional plugin_args.
+    Check plugin_args used by the framework. Plugin should go further to check
+    plugin_args used by itself.
     """
-    def __init__(self, name: str, plugin, plugin_args: dict):
+    @abc.abstractmethod
+    def __init__(self, namespace: str, name: str, plugin, plugin_args: dict):
+        self.namespace = namespace
         self.name = name
         self.plugin = plugin
         self.plugin_args = plugin_args
 
-    def new_instance(self, loop):
-        return self.plugin(name=self.name, config=self.plugin_args, loop=loop)
+    def new_instance(self, loop, name: str=''):
+        if not name:
+            name = uuid.uuid1()
+        return self.plugin(namespace=self.namespace, plugin_name=self.name,
+                           name=name, config=self.plugin_args, loop=loop)
 
 
 class LauncherPluginConf(PluginConf):
-    def __init__(self, name: str, plugin, plugin_args: dict):
+    def __init__(self, namespace: str, name: str, plugin, plugin_args: dict):
         msg = ideep_get(plugin_args, 'will', 'message')
         if not isinstance(msg, bytes):
             if isinstance(msg, str):
                 plugin_args['will']['message'] = msg.encode('utf-8')
             else:
                 raise CgException('will message can\'t be encoded to bytes')
-        super().__init__(name, plugin, plugin_args)
+        super().__init__(namespace, name, plugin, plugin_args)
 
 
 class CompanionPluginConf(PluginConf):
-    def __init__(self, name: str, plugin, plugin_args: dict, weight: int):
+    def __init__(self, namespace: str, name: str, plugin, plugin_args: dict,
+                 weight: int):
         if weight is not None and not isinstance(weight, int) and weight < 0:
             raise CgException('weight must an int >= 0')
-        super().__init__(name, plugin, plugin_args)
+        super().__init__(namespace, name, plugin, plugin_args)
         self.weight = weight
 
 
@@ -155,8 +161,11 @@ class RunnerContext(object):
         self.loop = asyncio.get_event_loop() if loop is None else loop
 
     @staticmethod
-    def build(runner_yaml: str, name: str = None):
+    def build(runner_yaml: str, namespace: str = None):
         runner_conf = load_yaml(runner_yaml)
+        if namespace is None:
+            namespace = runner_conf.get('namespace', uuid.uuid1())
+        names = set()
         validate_runner_conf(runner_conf)
         lmgr, cmgr = load_plugin_managers(runner_conf['launchers'])
         launchers_default = deep_get(runner_conf, {}, 'default', 'launcher')
@@ -167,9 +176,14 @@ class RunnerContext(object):
         for lc in runner_conf['launchers']:
             lc_args = copy.deepcopy(launchers_default)
             lc_args.update(lc.get('args', {}))
-            lp = find_plugin(lmgr, lc['plugin'])
-            launcher_plugins.append(LauncherPluginConf(lc['name'], lp, lc_args),
-                                    lc_args)
+            lc_class = find_plugin(lmgr, lc['plugin'])
+            lc_name = lc['name']
+            if lc_name in names:
+                raise CgException('name {} should be globally unique'.
+                                  format(lc_name))
+            names.add(lc_name)
+            launcher_plugins.append(LauncherPluginConf(namespace, lc_name,
+                                                       lc_class, lc_args))
 
             companions = lc.get('companions', [])
             n_weights = sum([1 for c in companions
@@ -178,31 +192,23 @@ class RunnerContext(object):
                 raise CgException('all or none weights')
 
             cps = []
-            for c in lc.get('companions', []):
-                c_args = copy.deepcopy(companions_default)
-                c_args.update(c.get('args', {}))
-                cp = CompanionPluginConf(c['name'],
-                                         find_plugin(cmgr, c['plugin']),
-                                         c.get('args', {}), c.get('weight'))
+            for cp in lc.get('companions', []):
+                cp_args = copy.deepcopy(companions_default)
+                cp_args.update(cp.get('args', {}))
+                cp_class = find_plugin(cmgr, cp['plugin'])
+                cp_name = cp['name']
+                if cp_name in names:
+                    raise CgException('name {} should be globally unique'.
+                                      format(cp_name))
+                names.add(cp_name)
+                cp = CompanionPluginConf(namespace, cp_name, cp_class,
+                                         cp_args, cp.get('weight'))
                 cps.append(cp)
 
-            launcher_companion_plugins[lc['name']] = cps
+            launcher_companion_plugins[lc_name] = cps
 
-        if name is None:
-            name = runner_conf.get('name', uuid.uuid1())
-        return RunnerContext(name, runner_conf.get('default'), launcher_plugins,
-                             launcher_companion_plugins)
-
-    #async def run(self, loop: BaseEventLoop=None):
-    #    if loop is None:
-    #        loop = asyncio.get_event_loop()
-    #    coros = []
-    #    for lp in self.launcher_plugins:
-    #        lc = lp.plugin(lp.name, lp.args, loop=loop)
-    #        coro = launcher_runner(lc, self.launcher_companion_plugins[lp.name],
-    #                               loop)
-    #        coros.append(coro)
-    #    await asyncio.wait(coros)
+        return RunnerContext(namespace, runner_conf.get('default'),
+                             launcher_plugins, launcher_companion_plugins)
 
 
 def to_cd(weights: list) -> list:
@@ -255,4 +261,20 @@ def cdf_from_weights(weights: list, x: int=None) -> int:
     """
     cd = to_cd(weights)
     return cdf_from_cd(cd, x)
+
+
+def future_successful_result(fu: asyncio.Future):
+    """
+    Return
+    :param fu:
+    :return:
+    """
+    if fu.cancelled():
+        log.info('future cancelled: {}'.format(fu))
+        return None
+    if fu.done() and fu.exception() is not None:
+        log.exception(fu.exception())
+        return None
+    return fu.result()
+
 
