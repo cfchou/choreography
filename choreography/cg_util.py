@@ -138,7 +138,7 @@ class LauncherPluginConf(PluginConf):
 
 class CompanionPluginConf(PluginConf):
     def __init__(self, namespace: str, name: str, plugin, plugin_args: dict,
-                 weight: int):
+                 weight: int=None):
         if weight is not None and not isinstance(weight, int) and weight < 0:
             raise CgException('weight must an int >= 0')
         super().__init__(namespace, name, plugin, plugin_args)

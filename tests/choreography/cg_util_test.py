@@ -28,8 +28,8 @@ config = {
                 'retain': False
             },
             'rate': 1,
-            'timeout': 1,
-            'duration': 1
+            'timeout': 1.0,
+            'duration': 1.0
         },
         'companion': {
         }
@@ -40,8 +40,8 @@ config = {
             'name': 'one_001',
             'args': {
                 'rate': 2,
-                'duration': 1,
-                'timeout': 3
+                'duration': 1.0,
+                'timeout': 3.0
             }
         }
     ]

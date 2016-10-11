@@ -13,17 +13,19 @@ import random
 from typing import List
 import asyncio
 from asyncio import BaseEventLoop
-from prometheus_client import Counter
-from prometheus_async.aio import count_exceptions, time, track_inprogress
+#from prometheus_client import Counter
+#from prometheus_async.aio import count_exceptions, time, track_inprogress
 
 import logging
 log = logging.getLogger(__name__)
 
+"""
 connect_fails_total = Counter('connect_fails_total',
                               'total connect failures')
 
 client_runs_total = Counter('client_runs_total',
                             'total clients connected and run with companions')
+"""
 
 
 class CgClientMetrics(object):
@@ -65,7 +67,7 @@ class CgClient(MQTTClient):
     def is_connected(self):
         return self.session.transitions.is_connected()
 
-    @count_exceptions(connect_fails_total)
+    #@count_exceptions(connect_fails_total)
     async def connect(self, uri=None, cleansession=None, cafile=None,
                       capath=None, cadata=None):
         try:
@@ -76,35 +78,64 @@ class CgClient(MQTTClient):
             log.exception(e)
             raise CgClientException from e
 
-    def deliver_message(self, timeout=None):
-        return super().deliver_message(timeout)
-
-    async def __receive(self, companion: Companion):
-        while True:
-            msg = await self.deliver_message()
-            await companion.received(msg)
+    async def __do_receive(self, companion: Companion):
+        log.debug('constantly receiving msg: {}'.format(self.client_id))
+        try:
+            while True:
+                msg = await self.deliver_message()
+                log.debug('{} received len(msg)={}'.format(self.client_id,
+                                                           len(msg)))
+                await companion.received(msg)
+        except ClientException as e:
+            log.exception(e)
+            raise CgClientException from e
 
     async def __do_idle(self, idle: cg_companion.CpIdle):
         if idle.duration > 0:
             await asyncio.sleep(idle.duration, loop=self._loop)
 
     async def __do_fire(self, fire: cg_companion.CpFire):
-        if isinstance(fire, cg_companion.Subscribe):
-            pass
-        if isinstance(fire, cg_companion.Publish):
-            pass
-        if isinstance(fire, cg_companion.Disconnect):
-            return True
+        async def __fire(_f):
+            try:
+                if isinstance(_f, cg_companion.CpSubscribe):
+                    await self.subscribe(_f.topics)
+                    log.debug('{} subscribed'.format(self.client_id))
+                    return True
+                elif isinstance(_f, cg_companion.CpPublish):
+                    await self.publish(_f.topic, _f.msg, _f.qos,
+                                       retain=_f.retain)
+                    log.debug('{} published'.format(self.client_id))
+                    return True
+                elif isinstance(_f, cg_companion.CpDisconnect):
+                    await self.disconnect()
+                    log.debug('{} disconnected'.format(self.client_id))
+                    return True
+                else:
+                    log.error('{} unknow fire {}'.format(self.client_id, _f))
+                    return False
+            except ClientException as e:
+                log.exception(e)
+                raise CgClientException from e
+
+        tasks = [__fire(fire)]
+        if fire.duration > 0:
+            tasks.append(asyncio.sleep(fire.duration))
+        done, _ = await asyncio.wait(tasks)
+        for d in done:
+            result = cg_util.future_successful_result(d)
+            if result is True:
+                return True
+        return False
 
     async def run(self, companion: Companion):
         log.debug('running: {} with {}'.format(self.client_id, companion))
         # a task for constantly receiving messages
-        recv = self._loop.create_task(self.__receive(companion))
+        recv = self._loop.create_task(self.__do_receive(companion))
         try:
             cmd_prev = None
             cmd_resp = None
             while True:
-                log.debug("run: {}".format(self.client_id))
+                log.debug("ask companion: {}".format(self.client_id))
                 done, _ = await asyncio.wait([companion.ask(cmd_resp)])
                 cmd = cg_util.future_successful_result(done.pop())
                 if cmd is None:
@@ -122,7 +153,7 @@ class CgClient(MQTTClient):
                     cmd_prev = cmd
                     continue
                 result = await self.__do_fire(cmd)
-                if isinstance(cmd, cg_companion.Disconnect):
+                if isinstance(cmd, cg_companion.CpDisconnect):
                     log.debug('disconnect & terminate {}'.
                               format(self.client_id))
                     break
@@ -203,6 +234,7 @@ async def _do_fire(uri: str,
     def is_running_client(_task: asyncio.Task):
         cc = cg_util.future_successful_result(_task)
         if cc is None:
+            # asyncio.sleep yields None
             return False
         cc = _task.result()
         if not isinstance(cc, CgClient):
@@ -220,7 +252,7 @@ async def _do_fire(uri: str,
     jobs = [run_client(i) for i in range(0, fire.rate)]
     if fire.duration > 0:
         jobs.append(asyncio.sleep(fire.duration))
-    timeout = None if fire.timeout is 0 else max(fire.duration, fire.timeout)
+    timeout = None if fire.timeout == 0 else max(fire.duration, fire.timeout)
     done, pending = await asyncio.wait(jobs, loop=loop, timeout=timeout)
     running = len([d for d in done if is_running_client(d)])
     log.debug('_dofire: done:{}, running:{}'.format(len(done), running))

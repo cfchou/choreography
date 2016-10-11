@@ -14,8 +14,8 @@ handlers:
 formatters:
   basic:
     style: "{"
-    #format: "{asctime:s}:{levelname:s}:{filename:s}:{lineno:d}:{message:s}"
-    format: "{asctime:s}:{levelname:s}:{pathname:s}:{lineno:d}:{message:s}"
+    format: "{asctime:s}:{levelname:s}:{filename:s}:{lineno:d}:{message:s}"
+    #format: "{asctime:s}:{levelname:s}:{pathname:s}:{lineno:d}:{message:s}"
 
 loggers:
   choreography:
@@ -26,7 +26,7 @@ loggers:
     level: DEBUG
   hbmqtt:
     handlers: [console, file]
-    level: DEBUG
+    level: WARN
   __main__:
     handlers: [console, file]
     level: DEBUG

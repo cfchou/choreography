@@ -9,6 +9,10 @@ class CgLauncherException(CgException):
     pass
 
 
+class CgCompanionException(CgException):
+    pass
+
+
 class CgClientException(CgException):
     pass
 

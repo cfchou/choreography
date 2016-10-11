@@ -23,8 +23,8 @@ class LcFire(LcCmd):
         otherwise:
             duration < t < max(duration, timeout)
     """
-    def __init__(self, rate: int, conf_queue: asyncio.Queue, duration: int=0,
-                 timeout: int=0):
+    def __init__(self, rate: int, conf_queue: asyncio.Queue, duration: float=0.,
+                 timeout: float=0.):
         self.rate = rate
         self.duration = duration
         self.timeout = timeout
@@ -43,7 +43,7 @@ class LcIdle(LcCmd):
     """
     Come back after 'duration' seconds
     """
-    def __init__(self, duration):
+    def __init__(self, duration: float=0.):
         self.duration = duration
 
 
@@ -82,7 +82,7 @@ class IdleLauncher(Launcher):
 
     async def ask(self, resp: LcResp=None) -> LcCmd:
         log.debug('IdleLauncher resp:{}'.format(resp))
-        return LcIdle(duration=self.config.get('duration', 1))
+        return LcIdle(duration=self.config.get('duration', 1.))
 
 
 class OneShotLauncher(Launcher):
@@ -92,9 +92,12 @@ class OneShotLauncher(Launcher):
     def __init__(self, namespace, plugin_name, name, config,
                  loop: BaseEventLoop=None):
         super().__init__(namespace, plugin_name, name, config, loop)
+        # parameters optional
         self.rate = self.config.get('rate', 1)
-        self.duration = self.config.get('duration', 1)
-        self.timeout = self.config.get('timeout', 0)
+        self.duration = self.config.get('duration', 1.)
+        self.timeout = self.config.get('timeout', 0.)
+
+        # stateful
         self.fu = None
 
     async def ask(self, resp: LcResp=None) -> LcCmd:
