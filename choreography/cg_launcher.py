@@ -2,6 +2,7 @@
 
 import abc
 from typing import List, Union, NamedTuple
+from choreography.cg_exception import CgLauncherException
 import asyncio
 from asyncio import BaseEventLoop
 
@@ -42,8 +43,10 @@ class LcTerminate(LcCmd):
 class LcIdle(LcCmd):
     """
     Come back after 'duration' seconds
+
+    duration == 0 means LcTerminate
     """
-    def __init__(self, duration: float=0.):
+    def __init__(self, duration: float=1.):
         self.duration = duration
 
 
@@ -96,6 +99,8 @@ class OneShotLauncher(Launcher):
         self.rate = self.config.get('rate', 1)
         self.duration = self.config.get('duration', 1.)
         self.timeout = self.config.get('timeout', 0.)
+        log.debug('{} args: rate={}, duration={}, timeout={}'.
+                  format(self.name, self.rate, self.duration, self.timeout))
 
         # stateful
         self.fu = None
@@ -118,5 +123,4 @@ class OneShotLauncher(Launcher):
         self.fu = self.loop.create_task(put_conf(queue))
         return LcFire(rate=self.rate, conf_queue=queue, duration=self.duration,
                       timeout=self.timeout)
-
 

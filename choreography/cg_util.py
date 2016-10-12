@@ -28,6 +28,113 @@ def ideep_get(nesting, *keys):
     return deep_get(nesting, None, *keys)
 
 
+def to_cd(weights: list) -> list:
+    """
+    Create a cumulative distribution.
+    weights must all > 0
+    """
+    if not weights:
+        raise CgException('len(weights) must > 0')
+    cd = []
+    for w in weights:
+        if w < 0:
+            raise CgException('all weights must >= 0')
+        cd.append(w) if len(cd) == 0 else cd.append(cd[-1] + w)
+    return cd
+
+
+def cdf_from_cd(cd: list, x: int=None) -> int:
+    """
+    A CDF(cumulative distribution function) parameterized by a cumulative
+    distribution.
+    If 'x' is None or <= 0, x = randrange(1, cd[-1] + 1)
+    Otherwise, x = x % cd[-1] + 1.
+
+    :param cd: should be a monotonically increasing list of positive integers.
+               Only a prefix of elements can be 0. However, we won't validate it
+               thoroughly.
+    :param x:
+    :return:
+    """
+    if cd is None or len(cd) == 0:
+        raise CgException('invalid cd {}'.format(cd))
+    if cd[-1] <= 0:
+        raise CgException('invalid cd {}'.format(cd))
+
+    if x is None or x <= 0:
+        x = random.randrange(1, cd[-1])
+    else:
+        m = x % cd[-1]
+        x = cd[-1] if m == 0 else m
+    # 1 <= x <= cd[-1]
+    for i, v in enumerate(cd):
+        if x <= v:
+            return i
+    raise CgException('Can\'t be here')
+
+
+def cdf_from_weights(weights: list, x: int=None) -> int:
+    """
+    A CDF(cumulative distribution function) parameterized by weights.
+    :param weights:
+    :param x:
+    :return:
+    """
+    cd = to_cd(weights)
+    return cdf_from_cd(cd, x)
+
+
+def future_successful_result(fu: asyncio.Future):
+    """
+    Return
+    :param fu:
+    :return:
+    """
+    if fu.cancelled():
+        log.info('future cancelled: {}'.format(fu))
+        return None
+    if fu.done() and fu.exception() is not None:
+        log.exception(fu.exception())
+        return None
+    return fu.result()
+
+
+def convert_coro_exception(from_excp, to_excp):
+    if from_excp is None:
+        raise CgException('invalid from_excp {}'.format(from_excp))
+    if to_excp is None or not issubclass(from_excp, BaseException):
+        raise CgException('invalid to_excp {}'.format(to_excp))
+
+    def decorate(coro):
+        @functools.wraps(coro)
+        async def converted(*args, **kwargs):
+            try:
+                return await coro(*args, **kwargs)
+            except from_excp as e:
+                log.exception(e)
+                raise to_excp from e
+        return converted
+    return decorate
+
+
+def convert_exception(from_excp, to_excp):
+    if from_excp is None:
+        raise CgException('invalid from_excp {}'.format(from_excp))
+    if to_excp is None or not issubclass(from_excp, BaseException):
+        raise CgException('invalid to_excp {}'.format(to_excp))
+
+    def decorate(func):
+        @functools.wraps(func)
+        def converted(*args, **kwargs):
+            try:
+                return func(*args, **kwargs)
+            except from_excp as e:
+                log.exception(e)
+                raise to_excp from e
+        return converted
+    return decorate
+
+
 def find_plugin(mgr: ExtensionManager, plugin_name):
     ps = [e.plugin for e in mgr.extensions if e.name == plugin_name]
     if len(ps) != 1:
@@ -118,6 +225,7 @@ class PluginConf(abc.ABC):
         self.plugin = plugin
         self.plugin_args = plugin_args
 
+    @convert_exception(Exception, CgException)
     def new_instance(self, loop, name: str=''):
         if not name:
             name = uuid.uuid1()
@@ -209,72 +317,5 @@ class RunnerContext(object):
 
         return RunnerContext(namespace, runner_conf.get('default'),
                              launcher_plugins, launcher_companion_plugins)
-
-
-def to_cd(weights: list) -> list:
-    """
-    Create a cumulative distribution.
-    """
-    if not weights:
-        raise CgException('len(weights) must > 0')
-    if len([w for w in weights if w < 0]):
-        raise CgException('all weights must >= 0')
-    cd = []
-    for w in weights:
-        cd.append(w) if len(cd) == 0 else cd.append(cd[-1] + w)
-    return cd
-
-
-def cdf_from_cd(cd: list, x: int=None) -> int:
-    """
-    A CDF(cumulative distribution function) parameterized by a cumulative
-    distribution.
-    If 'x' is None or <= 0, x = randrange(1, cd[-1] + 1)
-    Otherwise, x = x % cd[-1] + 1.
-
-    :param cd: should be a monotonically increasing list of positive integers.
-               Only a prefix of elements can be 0. However, we won't validate it
-               thoroughly.
-    :param x:
-    :return:
-    """
-    if cd is None or len(cd) == 0:
-        raise CgException('invalid cd {}'.format(cd))
-    if cd[-1] <= 0:
-        raise CgException('invalid cd {}'.format(cd))
-
-    if x is None or x <= 0:
-        x = random.randrange(1, cd[-1] + 1)
-    else:
-        x = x % len(cd[-1]) + 1
-    for i, v in enumerate(cd):
-        if x > v:
-            return i
-
-
-def cdf_from_weights(weights: list, x: int=None) -> int:
-    """
-    A CDF(cumulative distribution function) parameterized by weights.
-    :param weights:
-    :param x:
-    :return:
-    """
-    cd = to_cd(weights)
-    return cdf_from_cd(cd, x)
-
-
-def future_successful_result(fu: asyncio.Future):
-    """
-    Return
-    :param fu:
-    :return:
-    """
-    if fu.cancelled():
-        log.info('future cancelled: {}'.format(fu))
-        return None
-    if fu.done() and fu.exception() is not None:
-        log.exception(fu.exception())
-        return None
-    return fu.result()
 
 

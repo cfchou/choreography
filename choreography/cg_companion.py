@@ -2,8 +2,10 @@
 import asyncio
 from asyncio import BaseEventLoop
 import abc
+import pprint
 from hbmqtt.session import IncomingApplicationMessage
 from choreography.cg_exception import CgCompanionException
+from choreography import cg_util
 from typing import List, Tuple, Union, NamedTuple
 import logging
 log = logging.getLogger(__name__)
@@ -76,6 +78,9 @@ class CpTerminate(CpCmd):
 class CpIdle(CpCmd):
     """
     Come back after 'duration' seconds
+
+    duration == 0 means CgClient keeps receiving messages, but won't come back
+    to ask.
     """
     def __init__(self, duration):
         self.duration = duration
@@ -85,6 +90,7 @@ class CpResp(object):
     def __init__(self, prev_cmd: CpCmd, succeeded):
         self.prev_cmd = prev_cmd
         self.succeeded = succeeded
+
 
 
 class Companion(abc.ABC):
@@ -130,14 +136,16 @@ class Companion(abc.ABC):
 
 class LinearPublisher(Companion):
     """
-    LinearPublisher publishes at a steady pace:
+    LinearPublisher, after 'delay' secs, publishes at a steady pace:
 
     Given that:
-        'num_steps' is the number of 'step's
+        'step' is the number of secs per step
         'rate' is the number of publishes per 'step'
-    total = offset + rate * num_steps
+        'num_steps' is the number of 'step's
+        total = offset + rate * num_steps
 
     num_steps < 0 means infinite
+
     """
     def __init__(self, namespace, plugin_name, name, config,
                  loop: BaseEventLoop = None):
@@ -148,6 +156,7 @@ class LinearPublisher(Companion):
         # parameters optional
         self.qos = config.get('qos', 0)
         self.retain = config.get('retain', False)
+        self.delay = config.get('delay', 0)
         self.offset = config.get('offset', 0)
         self.rate = config.get('rate', 1)
         self.step = config.get('step', 1)
@@ -162,17 +171,26 @@ class LinearPublisher(Companion):
         self.step_count = 0
         self.rate_count = 0
         self.total = 0
+        log.debug('offset({}) + rate({}) * num_steps({}); step({})'.
+                  format(self.offset, self.rate, self.num_steps, self.step))
 
-    def _msg_deco(self):
+    def _msg_mark(self):
         self.total += 1
-        return bytes((str(self.total) + ': ').encode('utf-8')) + self.msg
+        mark = '{:04} {}:'.format(self.total, self.loop.time())
+        return bytes(mark.encode('utf-8')) + self.msg
 
     async def ask(self, resp: CpResp = None) -> CpCmd:
-        # publish 'offset' number of messages first
+        if self.delay > 0:
+            log.debug('Idle for {}'.format(self.delay))
+            i = self.delay
+            self.delay = 0
+            return CpIdle(duration=i)
+
+        # publish all 'offset' number of messages
         while self.offset > 0:
             log.debug('offset: {}'.format(self.offset))
             self.offset -= 1
-            return CpPublish(topic=self.topic, msg=self._msg_deco(),
+            return CpPublish(topic=self.topic, msg=self._msg_mark(),
                              qos=self.qos, retain=self.retain)
 
         if self.rate <= 0 or self.step_count >= self.num_steps >= 0:
@@ -184,20 +202,89 @@ class LinearPublisher(Companion):
 
         now = self.loop.time()
         if self.step_start == 0 or now >= self.step_start + self.step:
+            # a step forward
             self.step_count += 1
             self.step_start = now
-            self.rate_count = 1
+            self.rate_count = 0
             log.debug('step {} starts at {}'.format(self.step_count, now))
-            return CpPublish(topic=self.topic, msg=self._msg_deco(),
-                             qos=self.qos, retain=self.retain)
 
-        # now < self.step_start + self.step:
-        if self.rate_count > self.rate:
-            # step hasn't elapsed but rate has reached
+        # the current step hasn't elapsed: now < self.step_start + self.step
+
+        if self.rate_count >= self.rate:
+            # the rate reached
+            log.debug('step {} idle, fired {}'.format(self.step_count,
+                                                      self.rate_count))
             return CpIdle(duration=self.step_start + self.step - now)
+
         self.rate_count += 1
-        return CpPublish(topic=self.topic, msg=self._msg_deco(),
+        log.debug('step {} ongoing, firing {}'.format(self.step_count,
+                                                      self.rate_count))
+        return CpPublish(topic=self.topic, msg=self._msg_mark(),
                          qos=self.qos, retain=self.retain)
+
+
+class OneShotSubscriber(Companion):
+    """
+    OneShotSubscriber, after 'delay' secs, subscribes a number of topics and
+    listens for them for 'duration' secs.
+
+    duration == 0 means infinite
+    """
+    def __init__(self, namespace, plugin_name, name, config,
+                 loop: BaseEventLoop = None):
+        super().__init__(namespace, plugin_name, name, config, loop)
+        # parameters required
+        try:
+            self.topics = []
+            topics = config.get('topics')
+            if not topics:
+                topics = [{
+                    'topic': config['topic'],
+                    'qos': config.get('qos', 0)
+                }]
+
+            for x in topics:
+                topic = x.get('topic')
+                qos = x.get('qos')
+                if not topic or qos < 0 or qos > 2:
+                    raise CgCompanionException('invalid topic, qos: {}, {}'.
+                                               format(topic, qos))
+                self.topics.append((topic, qos))
+        except CgCompanionException as e:
+            raise e
+        except Exception as e:
+            raise CgCompanionException from e
+
+        # parameters optional
+        self.delay = config.get('delay', 0)
+        self.duration = config.get('duration', 0)
+        log.debug('{} args: delay={}, duration={}, topics={}'.
+                  format(self.name, self.delay, self.duration, self.topics))
+        # stateful
+        self.subscribed = False
+        self.duration_past = False
+
+    async def ask(self, resp: CpResp = None) -> CpCmd:
+        if self.delay > 0:
+            log.debug('Idle for {}'.format(self.delay))
+            i = self.delay
+            self.delay = 0
+            return CpIdle(duration=i)
+
+        if not self.subscribed:
+            self.subscribed = True
+            return CpSubscribe(self.topics)
+
+        if self.duration <= 0:
+            # CgClient won't come back to ask, but can keep receiving messages
+            return CpIdle(duration=0.)
+
+        if self.duration_past:
+            return CpTerminate()
+
+        self.duration_past = True
+        return CpIdle(duration=self.duration)
+
 
 
 

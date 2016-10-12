@@ -68,54 +68,48 @@ class CgClient(MQTTClient):
         return self.session.transitions.is_connected()
 
     #@count_exceptions(connect_fails_total)
+    @cg_util.convert_coro_exception(ClientException, CgClientException)
     async def connect(self, uri=None, cleansession=None, cafile=None,
                       capath=None, cadata=None):
-        try:
-            log.debug('connect to {}'.format(uri))
-            return await super().connect(uri, cleansession, cafile, capath,
-                                         cadata)
-        except ClientException as e:
-            log.exception(e)
-            raise CgClientException from e
+        log.debug('connect to {}'.format(uri))
+        return await super().connect(uri, cleansession, cafile, capath,
+                                     cadata)
 
     async def __do_receive(self, companion: Companion):
         log.debug('constantly receiving msg: {}'.format(self.client_id))
         try:
             while True:
+                log.debug('====================================')
                 msg = await self.deliver_message()
-                log.debug('{} received len(msg)={}'.format(self.client_id,
-                                                           len(msg)))
+                log.debug('== {} at {} == received {} bytes'.
+                          format(self.client_id, self._loop.time(), len(msg.publish_packet.data)))
+                log.debug('=={}=='.format(msg.publish_packet.data.decode('utf-8')))
                 await companion.received(msg)
-        except ClientException as e:
+        except asyncio.CancelledError as e:
+            log.info('{} cancelled'.format(self.client_id))
+        except (ClientException, Exception) as e:
             log.exception(e)
             raise CgClientException from e
 
-    async def __do_idle(self, idle: cg_companion.CpIdle):
-        if idle.duration > 0:
-            await asyncio.sleep(idle.duration, loop=self._loop)
-
     async def __do_fire(self, fire: cg_companion.CpFire):
+        @cg_util.convert_coro_exception(ClientException, CgClientException)
         async def __fire(_f):
-            try:
-                if isinstance(_f, cg_companion.CpSubscribe):
-                    await self.subscribe(_f.topics)
-                    log.debug('{} subscribed'.format(self.client_id))
-                    return True
-                elif isinstance(_f, cg_companion.CpPublish):
-                    await self.publish(_f.topic, _f.msg, _f.qos,
-                                       retain=_f.retain)
-                    log.debug('{} published'.format(self.client_id))
-                    return True
-                elif isinstance(_f, cg_companion.CpDisconnect):
-                    await self.disconnect()
-                    log.debug('{} disconnected'.format(self.client_id))
-                    return True
-                else:
-                    log.error('{} unknow fire {}'.format(self.client_id, _f))
-                    return False
-            except ClientException as e:
-                log.exception(e)
-                raise CgClientException from e
+            if isinstance(_f, cg_companion.CpSubscribe):
+                await self.subscribe(_f.topics)
+                log.debug('{} subscribed'.format(self.client_id))
+                return True
+            elif isinstance(_f, cg_companion.CpPublish):
+                await self.publish(_f.topic, _f.msg, _f.qos,
+                                   retain=_f.retain)
+                log.debug('{} published'.format(self.client_id))
+                return True
+            elif isinstance(_f, cg_companion.CpDisconnect):
+                await self.disconnect()
+                log.debug('{} disconnected'.format(self.client_id))
+                return True
+            else:
+                log.error('{} unknow fire {}'.format(self.client_id, _f))
+                return False
 
         tasks = [__fire(fire)]
         if fire.duration > 0:
@@ -128,7 +122,11 @@ class CgClient(MQTTClient):
         return False
 
     async def run(self, companion: Companion):
+        @cg_util.convert_coro_exception(Exception, CgCompanionException)
+        async def _asking(coro):
+            return await coro
         log.debug('running: {} with {}'.format(self.client_id, companion))
+        idle_forever = False
         # a task for constantly receiving messages
         recv = self._loop.create_task(self.__do_receive(companion))
         try:
@@ -136,7 +134,7 @@ class CgClient(MQTTClient):
             cmd_resp = None
             while True:
                 log.debug("ask companion: {}".format(self.client_id))
-                done, _ = await asyncio.wait([companion.ask(cmd_resp)])
+                done, _ = await asyncio.wait([_asking(companion.ask(cmd_resp))])
                 cmd = cg_util.future_successful_result(done.pop())
                 if cmd is None:
                     log.warn('can\'t retrieve cmd')
@@ -148,10 +146,14 @@ class CgClient(MQTTClient):
                     break
                 if isinstance(cmd, cg_companion.CpIdle):
                     log.debug('idle {}'.format(self.client_id))
-                    await self.__do_idle(cmd)
-                    cmd_resp = CpResp(cmd, succeeded=True)
-                    cmd_prev = cmd
-                    continue
+                    if cmd.duration > 0:
+                        await asyncio.sleep(cmd.duration, loop=self._loop)
+                        cmd_resp = CpResp(cmd, succeeded=True)
+                        cmd_prev = cmd
+                        continue
+                    else:
+                        idle_forever = True
+                        break
                 result = await self.__do_fire(cmd)
                 if isinstance(cmd, cg_companion.CpDisconnect):
                     log.debug('disconnect & terminate {}'.
@@ -160,7 +162,12 @@ class CgClient(MQTTClient):
                 cmd_resp = CpResp(cmd, succeeded=result)
                 cmd_prev = cmd
         finally:
-            recv.cancel()
+            # if idle_forever then CgClient keep receiving messages
+            if idle_forever:
+                log.debug('won\'t companion.ask but CgClient keeps receiving')
+            else:
+                log.debug('won\'t companion.ask and receive')
+                recv.cancel()
 
 
 def _pick_plugin_conf_func(cps):
@@ -184,7 +191,15 @@ def _pick_plugin_conf_func(cps):
     return lambda i: cps[cg_util.cdf_from_cd(cd, i)]
 
 
-def _run_client(uri: str,
+# TODO: this should be refactored into two part
+# It creates a task to client.connect asynchronously, when connected, create a
+# task to client.run asynchronously.
+# This means two things:
+# 1. Upper coro that chooses to wait the client.connect can cancel it but won't
+#    be able to cancel client.run.
+# 2. Conversely, exceptions leaked from client.run will not propagate to the
+#    upper coro and will go directly to the asyncio event loop.
+def _do_client_run(uri: str,
                 cp_conf: CompanionPluginConf,
                 fire: cg_launcher.LcFire,
                 loop: BaseEventLoop,
@@ -213,8 +228,10 @@ def _run_client(uri: str,
         if cp_conf is None:
             log.info('skip running because no companion plugs')
             return
+        # TODO: exception is dropped in callback?
         cp = cp_conf.new_instance(loop, name=cc.client_id)
         log.debug('use companion {} to run'.format(cp.name))
+        # run asynchorously
         loop.create_task(cc.run(cp))
 
     task = loop.create_task(connect())
@@ -245,7 +262,7 @@ async def _do_fire(uri: str,
 
     def run_client(_i):
         p = pick_func(_i + 1)
-        return _run_client(uri, p, fire, loop, cleansession, cafile, capath,
+        return _do_client_run(uri, p, fire, loop, cleansession, cafile, capath,
                            cadata)
 
     log.debug('at {} _do_fire for {} secs'.format(loop.time, fire.duration))
@@ -259,11 +276,6 @@ async def _do_fire(uri: str,
     return running, fire.rate - running
 
 
-async def _do_idle(idle: cg_launcher.LcIdle, loop: BaseEventLoop=None):
-    if idle.duration > 0:
-        await asyncio.sleep(idle.duration, loop=loop)
-
-
 async def launcher_runner(launcher: Launcher,
                           companion_plugins: List[CompanionPluginConf]):
     """
@@ -275,6 +287,9 @@ async def launcher_runner(launcher: Launcher,
     :param companion_plugins:
     :return:
     """
+    @cg_util.convert_coro_exception(Exception, CgLauncherException)
+    async def _asking(coro):
+        return await coro
     loop = launcher.loop
     cmd_prev = None
     cmd_resp = None
@@ -284,36 +299,44 @@ async def launcher_runner(launcher: Launcher,
     cafile = conf.get('cafile'),
     capath = conf.get('capath'),
     cadata = conf.get('cadata')
-    while True:
-        log.debug("ask launcher {}".format(launcher.name))
-        done, _ = await asyncio.wait([launcher.ask(cmd_resp)])
-        cmd = cg_util.future_successful_result(done.pop())
-        if cmd is None:
-            log.warn('can\'t retrieve cmd')
-            cmd_resp = LcResp(cmd_prev)
-            continue
-        if isinstance(cmd, cg_launcher.LcTerminate):
-            log.debug('terminate launcher {}'.format(launcher.name))
-            break
-        if isinstance(cmd, cg_launcher.LcIdle):
-            log.debug('idle launcher {}'.format(launcher.name))
-            await _do_idle(cmd, loop)
-            cmd_resp = LcResp(cmd)
+    try:
+        while True:
+            log.debug("ask launcher {}".format(launcher.name))
+            done, _ = await asyncio.wait([_asking(launcher.ask(cmd_resp))])
+            cmd = cg_util.future_successful_result(done.pop())
+            if cmd is None:
+                log.warn('can\'t retrieve cmd')
+                cmd_resp = LcResp(cmd_prev)
+                continue
+            if isinstance(cmd, cg_launcher.LcTerminate):
+                log.debug('terminate launcher {}'.format(launcher.name))
+                break
+            if isinstance(cmd, cg_launcher.LcIdle):
+                log.debug('idle launcher {}'.format(launcher.name))
+                if cmd.duration > 0:
+                    await asyncio.sleep(cmd.duration, loop=loop)
+                    cmd_resp = LcResp(cmd)
+                    cmd_prev = cmd
+                    continue
+                else:
+                    log.debug('terminate launcher {}'.format(launcher.name))
+                    break
+            # isinstance(cmd, cg_launcher.LcFire)
+            before = loop.time()
+            log.debug('before:{}'.format(before))
+            succeeded, failed = await _do_fire(uri,
+                                               companion_plugins, cmd, loop,
+                                               cleansession=cleansession,
+                                               cafile=cafile,
+                                               capath=capath,
+                                               cadata=cadata)
+            after = loop.time()
+            log.debug('after:{}'.format(after))
+            cmd_resp = LcResp(cmd, succeeded, failed)
             cmd_prev = cmd
-            continue
-        # isinstance(cmd, cg_launcher.LcFire)
-        before = loop.time()
-        log.debug('before:{}'.format(before))
-        succeeded, failed = await _do_fire(uri,
-                                           companion_plugins, cmd, loop,
-                                           cleansession=cleansession,
-                                           cafile=cafile,
-                                           capath=capath,
-                                           cadata=cadata)
-        after = loop.time()
-        log.debug('after:{}'.format(after))
-        cmd_resp = LcResp(cmd, succeeded, failed)
-        cmd_prev = cmd
+    except Exception as e:
+        log.exception(e)
+        raise CgException from e
 
 
 async def runner_runner(ctx: RunnerContext, loop: BaseEventLoop=None):

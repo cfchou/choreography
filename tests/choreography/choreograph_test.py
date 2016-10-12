@@ -38,8 +38,7 @@ config = {
                 'retain': False
             },
             'rate': 1,
-            'timeout': 1,
-            'duration': 1
+            'timeout': 1
         },
         'companion': {
         }
@@ -49,7 +48,7 @@ config = {
             'plugin': 'OneShotLauncher',
             'name': 'one_001',
             'args': {
-                'rate': 1,
+                'rate': 2,
                 'duration': 1,
                 'timeout': 10
             }
@@ -59,7 +58,8 @@ config = {
 
 
 from choreography.choreograph import CompanionPluginConf
-from choreography.cg_companion import LinearPublisher
+from choreography.cg_companion import LinearPublisher, OneShotSubscriber
+
 
 def test_launcher_runner():
     lc_conf = copy.deepcopy(config['default']['launcher'])
@@ -67,21 +67,37 @@ def test_launcher_runner():
     lc_conf.update(conf['args'])
     lc = OneShotLauncher('test_run', conf['name'], '001', lc_conf)
 
-    cp_args = {
+    pub_args = {
         'topic': 'cg_topic',
         'msg': b'==============Message==============',
         'qos': 1,
-        'offset': 10,
-        'rate': 3,
+        'offset': 3,
+        'rate': 1,
         'step': 2,
-        'num_steps': 3
+        'num_steps': 3,
+        'delay': 10
     }
-    cp_conf = CompanionPluginConf('test_run', 'linear', LinearPublisher,
-                                  cp_args)
+    pub_conf = CompanionPluginConf('test_run', 'linear', LinearPublisher,
+                                   pub_args, weight=1)
+
+    sub_args = {
+        'topics': [
+            {
+                'topic': 'cg_topic',
+                'qos': 1
+            }
+        ],
+        'delay': 0,
+        'duration': 60
+    }
+    sub_conf = CompanionPluginConf('test_run', 'oneshot', OneShotSubscriber,
+                                   sub_args, weight=1)
 
     loop = asyncio.get_event_loop()
-    tasks = asyncio.wait([launcher_runner(lc, companion_plugins=[cp_conf]),
-                         asyncio.sleep(160)])
+
+    tasks = asyncio.wait(
+        [launcher_runner(lc, companion_plugins=[pub_conf, sub_conf]),
+         asyncio.sleep(160)])
     loop.run_until_complete(tasks)
     print('*****Done*****')
 
