@@ -9,3 +9,4 @@ stevedore
 PyYAML
 prometheus_client
 prometheus_async
+autologging

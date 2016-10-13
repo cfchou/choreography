@@ -174,6 +174,13 @@ class LinearPublisher(Companion):
                          format(self.offset, self.rate, self.num_steps,
                                 self.step))
 
+    def _companion_done(self):
+        self.__log.debug('companion done {} steps'.format(self.step_count))
+        if self.disconnect_when_done:
+            return CpDisconnect()
+        else:
+            return CpTerminate()
+
     def _msg_mark(self):
         self.total += 1
         mark = '{:04} {}:'.format(self.total, self.loop.time())
@@ -193,12 +200,8 @@ class LinearPublisher(Companion):
             return CpPublish(topic=self.topic, msg=self._msg_mark(),
                              qos=self.qos, retain=self.retain)
 
-        if self.rate <= 0 or self.step_count >= self.num_steps >= 0:
-            self.__log.debug('companion done')
-            if self.disconnect_when_done:
-                return CpDisconnect()
-            else:
-                return CpTerminate()
+        if self.rate <= 0 or self.num_step <= 0 or self.step_count > self.num_steps:
+            return self._companion_done()
 
         now = self.loop.time()
         if self.step_start == 0 or now >= self.step_start + self.step:
@@ -222,6 +225,59 @@ class LinearPublisher(Companion):
                                                              self.rate_count))
         return CpPublish(topic=self.topic, msg=self._msg_mark(),
                          qos=self.qos, retain=self.retain)
+
+
+@logged
+class LinearPublisher2(LinearPublisher):
+    async def ask(self, resp: CpResp = None) -> CpCmd:
+        if self.delay > 0:
+            self.__log.debug('Idle for {}'.format(self.delay))
+            i = self.delay
+            self.delay = 0
+            return CpIdle(duration=i)
+
+        # publish all 'offset' number of messages
+        while self.offset > 0:
+            self.__log.debug('offset: {}'.format(self.offset))
+            self.offset -= 1
+            return CpPublish(topic=self.topic, msg=self._msg_mark(),
+                             qos=self.qos, retain=self.retain)
+
+        # self.step_count is finished steps
+        if self.rate <= 0 or self.step_count >= self.num_steps:
+            return self._companion_done()
+
+        now = self.loop.time()
+        if self.rate_count >= self.rate:
+            # the rate reached
+            self.__log.debug('step {} done, fired {}'.format(self.step_count,
+                                                             self.rate_count))
+            this_step = self.step_count
+            self.step_count += 1
+            self.rate_count = 0
+
+            if self.step_start + self.step > now:
+                idle = self.step_start + self.step - now
+                self.__log.debug('step {} idle {}'.format(this_step, idle))
+                return CpIdle(duration=idle)
+            else:
+                self.__log.debug('step {} late, takes {} secs'.
+                                 format(this_step, now - self.step_start))
+                if self.step_count >= self.num_steps:
+                    return self._companion_done()
+
+        if self.rate_count == 0:
+            self.step_start = now
+            self.__log.debug('step {} starts at {}'.format(self.step_count,
+                                                           now))
+        self.rate_count += 1
+        self.__log.debug('step {} ongoing, firing {}'.format(self.step_count,
+                                                             self.rate_count))
+        return CpPublish(topic=self.topic, msg=self._msg_mark(),
+                         qos=self.qos, retain=self.retain)
+
+
+
 
 
 @logged

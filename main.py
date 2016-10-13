@@ -4,7 +4,7 @@ import asyncio
 import copy
 
 from choreography.choreograph import CompanionPluginConf
-from choreography.cg_companion import LinearPublisher, OneShotSubscriber
+from choreography.cg_companion import LinearPublisher, LinearPublisher2, OneShotSubscriber
 from choreography.cg_launcher import OneShotLauncher
 from choreography.choreograph import launcher_runner
 import yaml
@@ -18,7 +18,7 @@ config = {
     'default': {
         'launcher': {
             'broker': {
-                'uri': 'mqtts://127.0.0.1',
+                'uri': 'mqtt://127.0.0.1',
                 'cafile': 'server.pem',
                 #'capath':
                 #'cadata':
@@ -59,12 +59,12 @@ config = {
                 # after 'delay' secs, launch 'rate' number of clients within
                 # 'timeout' secs.
                 'delay': 3,    # delay to allow subscribers to go first
-                'rate': 3,      # number of publishers
+                'rate': 100,      # number of publishers
                 'timeout': 10
             },
             'companions': [
                 {
-                    'plugin': 'LinearPublisher',
+                    'plugin': 'LinearPublisher2',
                     'name': 'plugin_pub_0001',
                     #'weight': 1
                     'args': {
@@ -75,11 +75,11 @@ config = {
                         #
                         # total = 'offset' + 'rate' * 'num_steps'
                         'qos': 1,
-                        'offset': 3,
-                        'rate': 1,
+                        'offset': 0,
+                        'rate': 50,
                         'step': 2,
-                        'num_steps': 3,
-                        'delay': 10
+                        'num_steps': 2
+                        #'delay': 3
                     }
                 }
             ]
@@ -133,7 +133,7 @@ def test_launcher_runner():
         cp_conf = copy.deepcopy(config['default']['companion'])
         cp_conf.update(cc_conf['args'])
         pub_confs.append(CompanionPluginConf('test_run', cc_conf['name'],
-                                             LinearPublisher, cp_conf))
+                                             LinearPublisher2, cp_conf))
 
 
     # launcher 2
