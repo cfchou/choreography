@@ -7,8 +7,7 @@ from hbmqtt.session import IncomingApplicationMessage
 from choreography.cg_exception import CgCompanionException
 from choreography import cg_util
 from typing import List, Tuple, Union, NamedTuple
-import logging
-log = logging.getLogger(__name__)
+from autologging import logged
 
 
 class CpCmd(abc.ABC):
@@ -92,7 +91,6 @@ class CpResp(object):
         self.succeeded = succeeded
 
 
-
 class Companion(abc.ABC):
     """
     Each of 'ask' and 'received' would be called sequentially.
@@ -134,6 +132,7 @@ class Companion(abc.ABC):
         return
 
 
+@logged
 class LinearPublisher(Companion):
     """
     LinearPublisher, after 'delay' secs, publishes at a steady pace:
@@ -171,8 +170,9 @@ class LinearPublisher(Companion):
         self.step_count = 0
         self.rate_count = 0
         self.total = 0
-        log.debug('offset({}) + rate({}) * num_steps({}); step({})'.
-                  format(self.offset, self.rate, self.num_steps, self.step))
+        self.__log.debug('offset({}) + rate({}) * num_steps({}); step({})'.
+                         format(self.offset, self.rate, self.num_steps,
+                                self.step))
 
     def _msg_mark(self):
         self.total += 1
@@ -181,20 +181,20 @@ class LinearPublisher(Companion):
 
     async def ask(self, resp: CpResp = None) -> CpCmd:
         if self.delay > 0:
-            log.debug('Idle for {}'.format(self.delay))
+            self.__log.debug('Idle for {}'.format(self.delay))
             i = self.delay
             self.delay = 0
             return CpIdle(duration=i)
 
         # publish all 'offset' number of messages
         while self.offset > 0:
-            log.debug('offset: {}'.format(self.offset))
+            self.__log.debug('offset: {}'.format(self.offset))
             self.offset -= 1
             return CpPublish(topic=self.topic, msg=self._msg_mark(),
                              qos=self.qos, retain=self.retain)
 
         if self.rate <= 0 or self.step_count >= self.num_steps >= 0:
-            log.debug('companion done')
+            self.__log.debug('companion done')
             if self.disconnect_when_done:
                 return CpDisconnect()
             else:
@@ -206,23 +206,25 @@ class LinearPublisher(Companion):
             self.step_count += 1
             self.step_start = now
             self.rate_count = 0
-            log.debug('step {} starts at {}'.format(self.step_count, now))
+            self.__log.debug('step {} starts at {}'.format(self.step_count,
+                                                           now))
 
         # the current step hasn't elapsed: now < self.step_start + self.step
 
         if self.rate_count >= self.rate:
             # the rate reached
-            log.debug('step {} idle, fired {}'.format(self.step_count,
-                                                      self.rate_count))
+            self.__log.debug('step {} idle, fired {}'.format(self.step_count,
+                                                             self.rate_count))
             return CpIdle(duration=self.step_start + self.step - now)
 
         self.rate_count += 1
-        log.debug('step {} ongoing, firing {}'.format(self.step_count,
-                                                      self.rate_count))
+        self.__log.debug('step {} ongoing, firing {}'.format(self.step_count,
+                                                             self.rate_count))
         return CpPublish(topic=self.topic, msg=self._msg_mark(),
                          qos=self.qos, retain=self.retain)
 
 
+@logged
 class OneShotSubscriber(Companion):
     """
     OneShotSubscriber, after 'delay' secs, subscribes a number of topics and
@@ -258,7 +260,7 @@ class OneShotSubscriber(Companion):
         # parameters optional
         self.delay = config.get('delay', 0)
         self.duration = config.get('duration', 0)
-        log.debug('{} args: delay={}, duration={}, topics={}'.
+        self.__log.debug('{} args: delay={}, duration={}, topics={}'.
                   format(self.name, self.delay, self.duration, self.topics))
         # stateful
         self.subscribed = False
@@ -266,7 +268,7 @@ class OneShotSubscriber(Companion):
 
     async def ask(self, resp: CpResp = None) -> CpCmd:
         if self.delay > 0:
-            log.debug('Idle for {}'.format(self.delay))
+            self.__log.debug('Idle for {}'.format(self.delay))
             i = self.delay
             self.delay = 0
             return CpIdle(duration=i)

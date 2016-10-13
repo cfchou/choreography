@@ -5,6 +5,7 @@ from choreography.cg_launcher import OneShotLauncher
 import copy
 import asyncio
 
+import autologging
 import logging
 import logging.config
 log = logging.getLogger(__name__)

@@ -16,8 +16,7 @@ from asyncio import BaseEventLoop
 #from prometheus_client import Counter
 #from prometheus_async.aio import count_exceptions, time, track_inprogress
 
-import logging
-log = logging.getLogger(__name__)
+from autologging import logged
 
 """
 connect_fails_total = Counter('connect_fails_total',
@@ -36,6 +35,7 @@ class CgClientMetrics(object):
         self.runner_name = runner_name
 
 
+@logged
 class CgClient(MQTTClient):
     """
 
@@ -71,24 +71,26 @@ class CgClient(MQTTClient):
     @cg_util.convert_coro_exception(ClientException, CgClientException)
     async def connect(self, uri=None, cleansession=None, cafile=None,
                       capath=None, cadata=None):
-        log.debug('connect to {}'.format(uri))
+        self.__log.debug('connect to {}'.format(uri))
         return await super().connect(uri, cleansession, cafile, capath,
                                      cadata)
 
     async def __do_receive(self, companion: Companion):
-        log.debug('constantly receiving msg: {}'.format(self.client_id))
+        self.__log.debug('constantly receiving msg: {}'.format(self.client_id))
         try:
             while True:
-                log.debug('====================================')
                 msg = await self.deliver_message()
-                log.debug('== {} at {} == received {} bytes'.
-                          format(self.client_id, self._loop.time(), len(msg.publish_packet.data)))
-                log.debug('=={}=='.format(msg.publish_packet.data.decode('utf-8')))
+                data = msg.publish_packet.data
+                self.__log.debug(
+                    '{} at {}, len={}, msg={}'.format(self.client_id,
+                                                      self._loop.time(),
+                                                      len(data),
+                                                      data.decode('utf-8')))
                 await companion.received(msg)
         except asyncio.CancelledError as e:
-            log.info('{} cancelled'.format(self.client_id))
+            self.__log.info('{} cancelled'.format(self.client_id))
         except (ClientException, Exception) as e:
-            log.exception(e)
+            self.__log.exception(e)
             raise CgClientException from e
 
     async def __do_fire(self, fire: cg_companion.CpFire):
@@ -96,19 +98,19 @@ class CgClient(MQTTClient):
         async def __fire(_f):
             if isinstance(_f, cg_companion.CpSubscribe):
                 await self.subscribe(_f.topics)
-                log.debug('{} subscribed'.format(self.client_id))
+                self.__log.debug('{} subscribed'.format(self.client_id))
                 return True
             elif isinstance(_f, cg_companion.CpPublish):
                 await self.publish(_f.topic, _f.msg, _f.qos,
                                    retain=_f.retain)
-                log.debug('{} published'.format(self.client_id))
+                self.__log.debug('{} published'.format(self.client_id))
                 return True
             elif isinstance(_f, cg_companion.CpDisconnect):
                 await self.disconnect()
-                log.debug('{} disconnected'.format(self.client_id))
+                self.__log.debug('{} disconnected'.format(self.client_id))
                 return True
             else:
-                log.error('{} unknow fire {}'.format(self.client_id, _f))
+                self.__log.error('{} unknow fire {}'.format(self.client_id, _f))
                 return False
 
         tasks = [__fire(fire)]
@@ -125,7 +127,7 @@ class CgClient(MQTTClient):
         @cg_util.convert_coro_exception(Exception, CgCompanionException)
         async def _asking(coro):
             return await coro
-        log.debug('running: {} with {}'.format(self.client_id, companion))
+        self.__log.debug('running: {} with {}'.format(self.client_id, companion))
         idle_forever = False
         # a task for constantly receiving messages
         recv = self._loop.create_task(self.__do_receive(companion))
@@ -133,19 +135,19 @@ class CgClient(MQTTClient):
             cmd_prev = None
             cmd_resp = None
             while True:
-                log.debug("ask companion: {}".format(self.client_id))
+                self.__log.debug("ask companion: {}".format(self.client_id))
                 done, _ = await asyncio.wait([_asking(companion.ask(cmd_resp))])
                 cmd = cg_util.future_successful_result(done.pop())
                 if cmd is None:
-                    log.warn('can\'t retrieve cmd')
+                    self.__log.warn('can\'t retrieve cmd')
                     # ask again with cmd_prev
                     cmd_resp = CpResp(cmd_prev, succeeded=False)
                     continue
                 if isinstance(cmd, cg_companion.CpTerminate):
-                    log.debug('terminate {}'.format(self.client_id))
+                    self.__log.debug('terminate {}'.format(self.client_id))
                     break
                 if isinstance(cmd, cg_companion.CpIdle):
-                    log.debug('idle {}'.format(self.client_id))
+                    self.__log.debug('idle {}'.format(self.client_id))
                     if cmd.duration > 0:
                         await asyncio.sleep(cmd.duration, loop=self._loop)
                         cmd_resp = CpResp(cmd, succeeded=True)
@@ -156,7 +158,7 @@ class CgClient(MQTTClient):
                         break
                 result = await self.__do_fire(cmd)
                 if isinstance(cmd, cg_companion.CpDisconnect):
-                    log.debug('disconnect & terminate {}'.
+                    self.__log.debug('disconnect & terminate {}'.
                               format(self.client_id))
                     break
                 cmd_resp = CpResp(cmd, succeeded=result)
@@ -164,9 +166,9 @@ class CgClient(MQTTClient):
         finally:
             # if idle_forever then CgClient keep receiving messages
             if idle_forever:
-                log.debug('won\'t companion.ask but CgClient keeps receiving')
+                self.__log.debug('won\'t companion.ask but CgClient keeps receiving')
             else:
-                log.debug('won\'t companion.ask and receive')
+                self.__log.debug('won\'t companion.ask and receive')
                 recv.cancel()
 
 
@@ -199,6 +201,7 @@ def _pick_plugin_conf_func(cps):
 #    be able to cancel client.run.
 # 2. Conversely, exceptions leaked from client.run will not propagate to the
 #    upper coro and will go directly to the asyncio event loop.
+@logged
 def _do_client_run(uri: str,
                 cp_conf: CompanionPluginConf,
                 fire: cg_launcher.LcFire,
@@ -208,29 +211,30 @@ def _do_client_run(uri: str,
                 capath: str=None,
                 cadata: str=None) -> asyncio.Task:
 
+    @logged
     async def connect():
         client_id, conf = await fire.conf_queue.get()
         cc = CgClient(client_id=client_id, config=conf, loop=loop)
-        log.debug('CgClient {} await connect...'.format(cc.client_id))
+        connect._log.debug('CgClient {} await connect...'.format(cc.client_id))
         await cc.connect(uri=uri, cleansession=cleansession, cafile=cafile,
                          capath=capath, cadata=cadata)
-        log.debug('CgClient {} connect awaited'.format(cc.client_id))
+        connect._log.debug('CgClient {} connect awaited'.format(cc.client_id))
         return cc
 
+    @logged
     def connect_cb(_fu: asyncio.Future):
         cc = cg_util.future_successful_result(_fu)
         if cc is None:
             return
         if not cc.is_connected():
-            log.info('connect is not connected: {}'.format(cc))
+            connect_cb._log.info('connect is not connected: {}'.format(cc))
             return
-        log.info('connect result: {}'.format(cc))
         if cp_conf is None:
-            log.info('skip running because no companion plugs')
+            connect_cb._log.info('skip running because no companion plugs')
             return
         # TODO: exception is dropped in callback?
         cp = cp_conf.new_instance(loop, name=cc.client_id)
-        log.debug('use companion {} to run'.format(cp.name))
+        connect_cb._log.debug('use companion {} to run'.format(cp.name))
         # run asynchorously
         loop.create_task(cc.run(cp))
 
@@ -239,6 +243,7 @@ def _do_client_run(uri: str,
     return task
 
 
+@logged
 async def _do_fire(uri: str,
                    companion_plugins: List[CompanionPluginConf],
                    fire: cg_launcher.LcFire,
@@ -265,17 +270,19 @@ async def _do_fire(uri: str,
         return _do_client_run(uri, p, fire, loop, cleansession, cafile, capath,
                            cadata)
 
-    log.debug('at {} _do_fire for {} secs'.format(loop.time, fire.duration))
+    _do_fire._log.debug('at {} for {} secs'.format(loop.time(),
+                                                   fire.duration))
     jobs = [run_client(i) for i in range(0, fire.rate)]
     if fire.duration > 0:
         jobs.append(asyncio.sleep(fire.duration))
     timeout = None if fire.timeout == 0 else max(fire.duration, fire.timeout)
     done, pending = await asyncio.wait(jobs, loop=loop, timeout=timeout)
     running = len([d for d in done if is_running_client(d)])
-    log.debug('_dofire: done:{}, running:{}'.format(len(done), running))
+    _do_fire._log.debug('done:{}, running:{}'.format(len(done), running))
     return running, fire.rate - running
 
 
+@logged
 async def launcher_runner(launcher: Launcher,
                           companion_plugins: List[CompanionPluginConf]):
     """
@@ -295,35 +302,37 @@ async def launcher_runner(launcher: Launcher,
     cmd_resp = None
     conf = launcher.config['broker']
     uri = conf['uri']
-    cleansession = conf.get('cleansession'),
-    cafile = conf.get('cafile'),
-    capath = conf.get('capath'),
+    cleansession = conf.get('cleansession')
+    cafile = conf.get('cafile')
+    capath = conf.get('capath')
     cadata = conf.get('cadata')
     try:
         while True:
-            log.debug("ask launcher {}".format(launcher.name))
+            launcher_runner._log.debug("ask launcher {}".format(launcher.name))
             done, _ = await asyncio.wait([_asking(launcher.ask(cmd_resp))])
             cmd = cg_util.future_successful_result(done.pop())
             if cmd is None:
-                log.warn('can\'t retrieve cmd')
+                launcher_runner._log.warn('can\'t retrieve cmd')
                 cmd_resp = LcResp(cmd_prev)
                 continue
             if isinstance(cmd, cg_launcher.LcTerminate):
-                log.debug('terminate launcher {}'.format(launcher.name))
+                launcher_runner._log.debug('terminate launcher {}'.format(launcher.name))
                 break
             if isinstance(cmd, cg_launcher.LcIdle):
-                log.debug('idle launcher {}'.format(launcher.name))
+                launcher_runner._log.debug('idle launcher {}'.
+                                           format(launcher.name))
                 if cmd.duration > 0:
                     await asyncio.sleep(cmd.duration, loop=loop)
                     cmd_resp = LcResp(cmd)
                     cmd_prev = cmd
                     continue
                 else:
-                    log.debug('terminate launcher {}'.format(launcher.name))
+                    launcher_runner._log.debug('terminate launcher {}'.
+                                               format(launcher.name))
                     break
             # isinstance(cmd, cg_launcher.LcFire)
             before = loop.time()
-            log.debug('before:{}'.format(before))
+            launcher_runner._log.debug('before:{}'.format(before))
             succeeded, failed = await _do_fire(uri,
                                                companion_plugins, cmd, loop,
                                                cleansession=cleansession,
@@ -331,20 +340,22 @@ async def launcher_runner(launcher: Launcher,
                                                capath=capath,
                                                cadata=cadata)
             after = loop.time()
-            log.debug('after:{}'.format(after))
+            launcher_runner._log.debug('after:{}'.format(after))
             cmd_resp = LcResp(cmd, succeeded, failed)
             cmd_prev = cmd
     except Exception as e:
-        log.exception(e)
+        launcher_runner._log.exception(e)
         raise CgException from e
 
 
+@logged
 async def runner_runner(ctx: RunnerContext, loop: BaseEventLoop=None):
     if loop is None:
         loop = asyncio.get_event_loop()
     coros = []
     for lc_conf in ctx.launcher_plugins:
-        # unlike companions, one launcher conf only creates one instance.
+        # unlike companions, one launcher conf only creates one instance. I.e.
+        # lc_conf.name == launcher.plugin_name == launcher.name
         lc = lc_conf.new_instance(loop, name=lc_conf.name)
         cp_confs = ctx.launcher_companion_plugins[lc_conf.name]
         coros.append(launcher_runner(lc, cp_confs))

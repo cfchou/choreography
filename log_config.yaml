@@ -14,7 +14,8 @@ handlers:
 formatters:
   basic:
     style: "{"
-    format: "{asctime:s}:{levelname:s}:{filename:s}:{lineno:d}:{message:s}"
+    format: "{asctime:s}:{levelname:s}:{name:s}:{funcName:s}:{message:s}"
+    #format: "{asctime:s}:{levelname:s}:{filename:s}:{lineno:d}:{message:s}"
     #format: "{asctime:s}:{levelname:s}:{pathname:s}:{lineno:d}:{message:s}"
 
 loggers:

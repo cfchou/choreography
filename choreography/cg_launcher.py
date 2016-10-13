@@ -6,8 +6,7 @@ from choreography.cg_exception import CgLauncherException
 import asyncio
 from asyncio import BaseEventLoop
 
-import logging
-log = logging.getLogger(__name__)
+from autologging import logged
 
 
 class LcCmd(abc.ABC):
@@ -75,6 +74,7 @@ class Launcher(abc.ABC):
         """
 
 
+@logged
 class IdleLauncher(Launcher):
     """
     idle, idle, idle...
@@ -84,43 +84,51 @@ class IdleLauncher(Launcher):
         super().__init__(namespace, plugin_name, name, config, loop)
 
     async def ask(self, resp: LcResp=None) -> LcCmd:
-        log.debug('IdleLauncher resp:{}'.format(resp))
+        self.__log.debug('IdleLauncher resp:{}'.format(resp))
         return LcIdle(duration=self.config.get('duration', 1.))
 
 
+@logged
 class OneShotLauncher(Launcher):
     """
     fire, terminate
+    after 'delay' secs, launch 'rate' number of clients within 'timeout' secs.
+
     """
     def __init__(self, namespace, plugin_name, name, config,
                  loop: BaseEventLoop=None):
         super().__init__(namespace, plugin_name, name, config, loop)
         # parameters optional
         self.rate = self.config.get('rate', 1)
-        self.duration = self.config.get('duration', 1.)
         self.timeout = self.config.get('timeout', 0.)
-        log.debug('{} args: rate={}, duration={}, timeout={}'.
-                  format(self.name, self.rate, self.duration, self.timeout))
+        self.__log.debug('{} args: rate={}, timeout={}'.
+                         format(self.name, self.rate, self.timeout))
+        self.delay = config.get('delay', 0)
 
         # stateful
         self.fu = None
 
     async def ask(self, resp: LcResp=None) -> LcCmd:
-        maxsize = self.rate
+        if self.delay > 0:
+            self.__log.debug('Idle for {}'.format(self.delay))
+            i = self.delay
+            self.delay = 0
+            return LcIdle(duration=i)
 
-        async def put_conf(q):
+        async def put_conf(q, maxsize):
             for _ in range(0, maxsize):
                 # autogen when client_id is None
                 await q.put((None, self.config))
 
-        log.debug('OneShotLauncher resp:{}'.format(resp))
         if self.fu is not None:
             self.fu.cancel()
+            self.__log.debug('LcTerminate')
             return LcTerminate()
 
-        queue = asyncio.Queue(maxsize=maxsize,
+        queue = asyncio.Queue(maxsize=self.rate,
                               loop=self.loop)
-        self.fu = self.loop.create_task(put_conf(queue))
-        return LcFire(rate=self.rate, conf_queue=queue, duration=self.duration,
+        self.fu = self.loop.create_task(put_conf(queue, self.rate))
+        self.__log.debug('LcFire')
+        return LcFire(rate=self.rate, conf_queue=queue, duration=0,
                       timeout=self.timeout)
 

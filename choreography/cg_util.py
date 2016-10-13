@@ -12,9 +12,7 @@ from asyncio import BaseEventLoop
 from stevedore.named import NamedExtensionManager, ExtensionManager
 from choreography.cg_exception import CgException, CgLauncherException
 from choreography.cg_launcher import Launcher
-import logging
-
-log = logging.getLogger(__name__)
+from autologging import logged
 
 
 def deep_get(nesting, default, *keys):
@@ -84,6 +82,7 @@ def cdf_from_weights(weights: list, x: int=None) -> int:
     return cdf_from_cd(cd, x)
 
 
+@logged
 def future_successful_result(fu: asyncio.Future):
     """
     Return
@@ -91,14 +90,15 @@ def future_successful_result(fu: asyncio.Future):
     :return:
     """
     if fu.cancelled():
-        log.info('future cancelled: {}'.format(fu))
+        future_successful_result._log.info('future cancelled: {}'.format(fu))
         return None
     if fu.done() and fu.exception() is not None:
-        log.exception(fu.exception())
+        future_successful_result._log.exception(fu.exception())
         return None
     return fu.result()
 
 
+@logged
 def convert_coro_exception(from_excp, to_excp):
     if from_excp is None:
         raise CgException('invalid from_excp {}'.format(from_excp))
@@ -111,12 +111,13 @@ def convert_coro_exception(from_excp, to_excp):
             try:
                 return await coro(*args, **kwargs)
             except from_excp as e:
-                log.exception(e)
+                convert_coro_exception._log.exception(e)
                 raise to_excp from e
         return converted
     return decorate
 
 
+@logged
 def convert_exception(from_excp, to_excp):
     if from_excp is None:
         raise CgException('invalid from_excp {}'.format(from_excp))
@@ -129,7 +130,7 @@ def convert_exception(from_excp, to_excp):
             try:
                 return func(*args, **kwargs)
             except from_excp as e:
-                log.exception(e)
+                convert_exception._log.exception(e)
                 raise to_excp from e
         return converted
     return decorate
@@ -143,24 +144,7 @@ def find_plugin(mgr: ExtensionManager, plugin_name):
     return ps[0]
 
 
-#def load_launchers(conf, launcher_mgr: ExtensionManager) -> List[Launcher]:
-#    def new_launcher(lc, default):
-#        plugin = lc['plugin']
-#        log.info('new_launcher: {}'.format(plugin))
-#        exts = [ext for ext in launcher_mgr.extensions if ext.name == plugin]
-#        if len(exts) == 0:
-#            raise CgException('plugin {} doesn\'t exist'.format(plugin))
-#        if len(exts) > 1:
-#            raise CgException('duplicated plugins {} found'.
-#                                      format(plugin))
-#
-#        conf = copy.deepcopy(default)
-#        conf.update(lc.get('args', {}))
-#        return exts[0].plugin(conf)
-#    return [new_launcher(lc, conf['default'])
-#            for lc in conf['launchers']]
-
-
+@logged
 def load_plugin_managers(launchers_conf) \
         -> Tuple[NamedExtensionManager, NamedExtensionManager]:
     def on_missing_launcher_plugin(name):
@@ -169,7 +153,7 @@ def load_plugin_managers(launchers_conf) \
     def on_missing_companion_plugin(name):
         raise CgException('missing companion plugin {}'.format(name))
 
-    log.debug(pprint.pformat(launchers_conf))
+    load_plugin_managers._log.debug(pprint.pformat(launchers_conf))
     names = set()
     launcher_plugins = set()
     companion_plugins = set()
@@ -188,14 +172,15 @@ def load_plugin_managers(launchers_conf) \
         companion_plugins |= set([ideep_get(c, 'companion', 'plugin')
                                   for c in companions])
 
-    log.info('trying to load launcher plugins: {}'.format(launcher_plugins))
+    load_plugin_managers._log.info('trying to load launcher plugins: {}'.
+                                   format(launcher_plugins))
     launcher_mgr = NamedExtensionManager(
         namespace='choreography.launcher_plugins',
         on_missing_entrypoints_callback=on_missing_launcher_plugin,
         names=launcher_plugins)
 
-    log.info('trying to load companion plugins: {}'.
-             format(companion_plugins))
+    load_plugin_managers.log.info('trying to load companion plugins: {}'.
+                                  format(companion_plugins))
     companion_mgr = NamedExtensionManager(
         namespace='choreography.launcher_plugins',
         on_missing_entrypoints_callback=on_missing_companion_plugin,
@@ -203,9 +188,10 @@ def load_plugin_managers(launchers_conf) \
     return launcher_mgr, companion_mgr
 
 
+@logged
 def load_yaml(runner_yaml: str) -> dict:
     with open(runner_yaml) as fh:
-        log.info('load_yaml {}'.format(runner_yaml))
+        load_yaml._log.info('load_yaml {}'.format(runner_yaml))
         return yaml.load(fh)
 
 
