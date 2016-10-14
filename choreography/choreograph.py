@@ -1,6 +1,7 @@
 # vim:fileencoding=utf-8
 
-from hbmqtt.client import MQTTClient, ClientException
+from hbmqtt.client import MQTTClient, ClientException, ConnectException
+from hbmqtt.client import mqtt_connected
 from hbmqtt.session import IncomingApplicationMessage
 from choreography import cg_launcher
 from choreography.cg_launcher import Launcher, LcResp
@@ -75,10 +76,14 @@ class CgClient(MQTTClient):
         return await super().connect(uri, cleansession, cafile, capath,
                                      cadata)
 
+    @mqtt_connected
     async def __do_receive(self, companion: Companion):
         self.__log.debug('constantly receiving msg: {}'.format(self.client_id))
-        try:
-            while True:
+        while True:
+            try:
+                if not self._connected_state.is_set():
+                    self.__log.warning("{} Client not connected, waiting for it".format(self.client_id))
+                    await self._connected_state.wait()
                 msg = await self.deliver_message()
                 data = msg.publish_packet.data
                 self.__log.debug(
@@ -87,11 +92,18 @@ class CgClient(MQTTClient):
                                                       len(data),
                                                       data.decode('utf-8')))
                 await companion.received(msg)
-        except asyncio.CancelledError as e:
-            self.__log.info('{} cancelled'.format(self.client_id))
-        except (ClientException, Exception) as e:
-            self.__log.exception(e)
-            raise CgClientException from e
+            except asyncio.CancelledError as e:
+                self.__log.debug("{} 00000 = = = = = = = = = = = = = =".format(self.client_id))
+                self.__log.info('{} cancelled'.format(self.client_id))
+                break
+            except ConnectException as e:
+                self.__log.debug("{} 11111 = = = = = = = = = = = = = =".format(self.client_id))
+                self.__log.exception(e)
+                raise CgClientException from e
+            except (ClientException, Exception) as e:
+                self.__log.debug("{} 22222 = = = = = = = = = = = = = =".format(self.client_id))
+                self.__log.exception(e)
+                # retry
 
     async def __do_fire(self, fire: cg_companion.CpFire):
         @cg_util.convert_coro_exception(ClientException, CgClientException)
@@ -215,7 +227,7 @@ def _do_client_run(uri: str,
     async def connect():
         client_id, conf = await fire.conf_queue.get()
         cc = CgClient(client_id=client_id, config=conf, loop=loop)
-        connect._log.debug('CgClient {} await connect...'.format(cc.client_id))
+        connect._log.debug('CgClient {} await connect'.format(cc.client_id))
         await cc.connect(uri=uri, cleansession=cleansession, cafile=cafile,
                          capath=capath, cadata=cadata)
         connect._log.debug('CgClient {} connect awaited'.format(cc.client_id))
@@ -333,6 +345,10 @@ async def launcher_runner(launcher: Launcher,
             # isinstance(cmd, cg_launcher.LcFire)
             before = loop.time()
             launcher_runner._log.debug('before:{}'.format(before))
+            launcher_runner._log.debug('uri={}, cleansession={}, cafile={}, '
+                                       'capath={}, cadata={}'.
+                                       format(uri, cleansession, cafile, capath,
+                                              cadata))
             succeeded, failed = await _do_fire(uri,
                                                companion_plugins, cmd, loop,
                                                cleansession=cleansession,

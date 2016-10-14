@@ -174,8 +174,18 @@ class LinearPublisher(Companion):
                          format(self.offset, self.rate, self.num_steps,
                                 self.step))
 
+        # short name for log
+        self.sn = self.name[-16:]
+
+        def _debug(s):
+            self.__log.debug('{} {}'.format(self.sn, s))
+
+        self._debug = _debug
+
+
     def _companion_done(self):
-        self.__log.debug('companion done {} steps'.format(self.step_count))
+        #self.__log.debug('companion done {} steps'.format(self.step_count))
+        self._debug('companion done {} steps'.format(self.step_count))
         if self.disconnect_when_done:
             return CpDisconnect()
         else:
@@ -188,14 +198,16 @@ class LinearPublisher(Companion):
 
     async def ask(self, resp: CpResp = None) -> CpCmd:
         if self.delay > 0:
-            self.__log.debug('Idle for {}'.format(self.delay))
+            #self.__log.debug('Idle for {}'.format(self.delay))
+            self._debug('Idle for {}'.format(self.delay))
             i = self.delay
             self.delay = 0
             return CpIdle(duration=i)
 
         # publish all 'offset' number of messages
         while self.offset > 0:
-            self.__log.debug('offset: {}'.format(self.offset))
+            #self.__log.debug('offset: {}'.format(self.offset))
+            self._debug('offset: {}'.format(self.offset))
             self.offset -= 1
             return CpPublish(topic=self.topic, msg=self._msg_mark(),
                              qos=self.qos, retain=self.retain)
@@ -209,20 +221,25 @@ class LinearPublisher(Companion):
             self.step_count += 1
             self.step_start = now
             self.rate_count = 0
-            self.__log.debug('step {} starts at {}'.format(self.step_count,
-                                                           now))
+            #self.__log.debug('step {} starts at {}'.format(self.step_count,
+            #                                               now))
+            self._debug('step {} starts at {}'.format(self.step_count, now))
 
         # the current step hasn't elapsed: now < self.step_start + self.step
 
         if self.rate_count >= self.rate:
             # the rate reached
-            self.__log.debug('step {} idle, fired {}'.format(self.step_count,
-                                                             self.rate_count))
+            #self.__log.debug('step {} idle, fired {}'.format(self.step_count,
+            #                                                 self.rate_count))
+            self._log.debug('step {} idle, fired {}'.format(self.step_count,
+                                                            self.rate_count))
             return CpIdle(duration=self.step_start + self.step - now)
 
         self.rate_count += 1
-        self.__log.debug('step {} ongoing, firing {}'.format(self.step_count,
-                                                             self.rate_count))
+        #self.__log.debug('step {} ongoing, firing {}'.format(self.step_count,
+        #                                                     self.rate_count))
+        self._debug('step {} ongoing, firing {}'.format(self.step_count,
+                                                        self.rate_count))
         return CpPublish(topic=self.topic, msg=self._msg_mark(),
                          qos=self.qos, retain=self.retain)
 
@@ -231,14 +248,16 @@ class LinearPublisher(Companion):
 class LinearPublisher2(LinearPublisher):
     async def ask(self, resp: CpResp = None) -> CpCmd:
         if self.delay > 0:
-            self.__log.debug('Idle for {}'.format(self.delay))
+            #self.__log.debug('Idle for {}'.format(self.delay))
+            self._debug('Idle for {}'.format(self.delay))
             i = self.delay
             self.delay = 0
             return CpIdle(duration=i)
 
         # publish all 'offset' number of messages
         while self.offset > 0:
-            self.__log.debug('offset: {}'.format(self.offset))
+            #self.__log.debug('offset: {}'.format(self.offset))
+            self._debug('offset: {}'.format(self.offset))
             self.offset -= 1
             return CpPublish(topic=self.topic, msg=self._msg_mark(),
                              qos=self.qos, retain=self.retain)
@@ -250,29 +269,38 @@ class LinearPublisher2(LinearPublisher):
         now = self.loop.time()
         if self.rate_count >= self.rate:
             # the rate reached
-            self.__log.debug('step {} done, fired {}'.format(self.step_count,
-                                                             self.rate_count))
+            #self.__log.debug('step {} done, fired {}'.format(self.step_count,
+            #                                                 self.rate_count))
+            self._debug('step {} done, fired {}'.format(self.step_count,
+                                                        self.rate_count))
             this_step = self.step_count
             self.step_count += 1
             self.rate_count = 0
 
             if self.step_start + self.step > now:
                 idle = self.step_start + self.step - now
-                self.__log.debug('step {} idle {}'.format(this_step, idle))
+                #self.__log.debug('step {} idle {}'.format(this_step, idle))
+                self._debug('step {} idle {}'.format(this_step, idle))
                 return CpIdle(duration=idle)
             else:
-                self.__log.debug('step {} late, takes {} secs'.
-                                 format(this_step, now - self.step_start))
+                #self.__log.debug('step {} late, takes {} secs'.
+                #                 format(this_step, now - self.step_start))
+                self._debug('step {} late, takes {} secs'.
+                            format(this_step, now - self.step_start))
                 if self.step_count >= self.num_steps:
                     return self._companion_done()
 
         if self.rate_count == 0:
             self.step_start = now
-            self.__log.debug('step {} starts at {}'.format(self.step_count,
-                                                           now))
+            #self.__log.debug('step {} starts at {}'.format(self.step_count,
+            #                                               now))
+            self._debug('step {} starts at {}'.format(self.step_count, now))
+
         self.rate_count += 1
-        self.__log.debug('step {} ongoing, firing {}'.format(self.step_count,
-                                                             self.rate_count))
+        #self.__log.debug('step {} ongoing, firing {}'.format(self.step_count,
+        #                                                     self.rate_count))
+        self._debug('step {} ongoing, firing {}'.format(self.step_count,
+                                                        self.rate_count))
         return CpPublish(topic=self.topic, msg=self._msg_mark(),
                          qos=self.qos, retain=self.retain)
 

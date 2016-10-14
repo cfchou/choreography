@@ -12,6 +12,7 @@ from asyncio import BaseEventLoop
 from stevedore.named import NamedExtensionManager, ExtensionManager
 from choreography.cg_exception import CgException, CgLauncherException
 from choreography.cg_launcher import Launcher
+import collections
 from autologging import logged
 
 
@@ -305,3 +306,22 @@ class RunnerContext(object):
                              launcher_plugins, launcher_companion_plugins)
 
 
+
+
+def update(target, src):
+    """
+    'target' is recursively updated by 'src'
+    :param target:
+    :param src:
+    :return:
+    """
+    for k, v in src.items():
+        if isinstance(v, collections.Mapping):
+            tv = target.get(k, {})
+            if isinstance(tv, collections.Mapping):
+                update(tv, v)
+                target[k] = tv
+            else:
+                target[k] = v
+        else:
+            target[k] = v

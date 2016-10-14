@@ -27,7 +27,7 @@ loggers:
     level: DEBUG
   hbmqtt:
     handlers: [console, file]
-    level: WARN
+    level: DEBUG
   __main__:
     handlers: [console, file]
     level: DEBUG
