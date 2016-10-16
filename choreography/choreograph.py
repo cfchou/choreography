@@ -76,34 +76,38 @@ class CgClient(MQTTClient):
         return await super().connect(uri, cleansession, cafile, capath,
                                      cadata)
 
-    @mqtt_connected
     async def __do_receive(self, companion: Companion):
         self.__log.debug('constantly receiving msg: {}'.format(self.client_id))
-        while True:
-            try:
-                if not self._connected_state.is_set():
-                    self.__log.warning("{} Client not connected, waiting for it".format(self.client_id))
-                    await self._connected_state.wait()
-                msg = await self.deliver_message()
-                data = msg.publish_packet.data
-                self.__log.debug(
-                    '{} at {}, len={}, msg={}'.format(self.client_id,
-                                                      self._loop.time(),
-                                                      len(data),
-                                                      data.decode('utf-8')))
-                await companion.received(msg)
-            except asyncio.CancelledError as e:
-                self.__log.debug("{} 00000 = = = = = = = = = = = = = =".format(self.client_id))
-                self.__log.info('{} cancelled'.format(self.client_id))
-                break
-            except ConnectException as e:
-                self.__log.debug("{} 11111 = = = = = = = = = = = = = =".format(self.client_id))
-                self.__log.exception(e)
-                raise CgClientException from e
-            except (ClientException, Exception) as e:
-                self.__log.debug("{} 22222 = = = = = = = = = = = = = =".format(self.client_id))
-                self.__log.exception(e)
-                # retry
+        count = 0
+        try:
+            while True:
+                try:
+                    if not self._connected_state.is_set():
+                        self.__log.warning("{} not connected, waiting for it".
+                                           format(self.client_id))
+                        await self._connected_state.wait()
+                    msg = await self.deliver_message()
+                    data = msg.publish_packet.data
+                    count += 1
+                    self.__log.debug('{} receives at {}'.
+                                     format(self.client_id, self._loop.time()))
+                    self.__log.debug('len={}, msg_{} = {}'.
+                                     format(len(data), count,
+                                            data.decode('utf-8')))
+                    await companion.received(msg)
+                except asyncio.CancelledError as e:
+                    self.__log.info('{} cancelled'.format(self.client_id))
+                    break
+                except ConnectException as e:
+                    # assert issubclass(ConnectException, ClientException)
+                    self.__log.exception(e)
+                    raise CgClientException from e
+                except (ClientException, Exception) as e:
+                    # assert issubclass(ClientException, BaseException)
+                    self.__log.exception(e)
+                    # retry
+        finally:
+            self.__log.warn(' {} leaves')
 
     async def __do_fire(self, fire: cg_companion.CpFire):
         @cg_util.convert_coro_exception(ClientException, CgClientException)
@@ -122,7 +126,7 @@ class CgClient(MQTTClient):
                 self.__log.debug('{} disconnected'.format(self.client_id))
                 return True
             else:
-                self.__log.error('{} unknow fire {}'.format(self.client_id, _f))
+                self.__log.error('{} unknown {}'.format(self.client_id, _f))
                 return False
 
         tasks = [__fire(fire)]

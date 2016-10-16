@@ -5,7 +5,7 @@ import copy
 
 from choreography.choreograph import CompanionPluginConf
 from choreography.cg_companion import LinearPublisher, LinearPublisher2, OneShotSubscriber
-from choreography.cg_launcher import OneShotLauncher
+from choreography.cg_launcher import OneShotLauncher, OneInstanceLauncher
 from choreography.choreograph import launcher_runner
 from choreography import cg_util
 import yaml
@@ -19,7 +19,7 @@ config = {
     'default': {
         'launcher': {
             'broker': {
-                'uri': 'mqtts://127.0.0.1',
+                'uri': 'mqtt://127.0.0.1',
                 'cafile': 'server.pem',
                 #'capath':
                 #'cadata':
@@ -59,9 +59,10 @@ config = {
             'args': {
                 # after 'delay' secs, launch 'rate' number of clients within
                 # 'timeout' secs.
-                'delay': 3,    # delay to allow subscribers to go first
-                'rate': 100,      # number of publishers
-                'timeout': 10
+                'delay': 5,    # delay to allow subscribers to go first
+                'rate': 200,      # number of publishers
+                'timeout': 10,
+                'client_id_prefix': 'cg_pub_'
             },
             'companions': [
                 {
@@ -79,20 +80,21 @@ config = {
                         'qos': 1,
                         'offset': 0,
                         'step': 1,
-                        'num_steps': 1,
-                        'rate': 50
+                        'num_steps': 2,
+                        'rate': 20
                     }
                 }
             ]
         },
         {
-            'plugin': 'OneShotLauncher',
+            'plugin': 'OneInstanceLauncher',
             'name': 'launch_sub',
             'args': {
                 'broker': {
                     'cleansession': False,
                 },
-                'rate': 1,      # 1 subscriber
+                'keep_alive': 600,
+                'client_id': 'cg_sub_001'
             },
             'companions': [
                 {
@@ -134,6 +136,74 @@ config = {
     ]
 }
 
+from hbmqtt.client import MQTTClient, ConnectException
+from hbmqtt.errors import MQTTException
+
+async def do_sub(client):
+    await client.connect(uri='mqtt://192.168.1.35',
+                         cleansession=False,
+                         cafile='server.pem')
+    log.debug('- - - - - connected')
+    filters = [('cg_topic', 1)]
+    await client.subscribe(filters)
+    log.debug('- - - - - subscribed')
+    count = 0
+    while True:
+        log.debug('10008 = = = = =')
+        try:
+            if not client._connected_state.is_set():
+                log.warning("10009 Client not connected, waiting for it".format(client.client_id))
+                await client._connected_state.wait()
+            log.warning("10010 Client connected, waiting")
+            message = await client.deliver_message()
+            count += 1
+            data = message.publish_packet.data
+            log.debug('= = = = = msg_{} ={}'.format(count, data.decode('utf-8')))
+
+        except MQTTException:
+            log.debug("Error reading packet")
+        except asyncio.CancelledError as e:
+            log.debug("= = = = = = = CancelledError")
+            log.exception(e)
+            break
+        except ConnectException as e:
+            log.exception(e)
+            raise e from e
+        except Exception as e:
+            log.debug("= = = = = = = Exception")
+            log.exception(e)
+            # retry
+        except KeyboardInterrupt:
+            log.debug("= = = = = = = KeyboardInterrupt")
+            break
+    await client.disconnect()
+    log.debug('- - - - - disconnected')
+
+
+async def sub(loop):
+    config = {
+        'certfile': 'client.crt',
+        'keyfile': 'client.key',
+        'check_hostname': False,
+        'keep_alive': 60,
+        'ping_delay': 1,
+        'default_qos': 0,
+        'default_retain': False,
+        'auto_reconnect': True,
+        #'reconnect_max_interval': 11,
+        'reconnect_retries': 3,
+        # 'certfile:
+        # 'keyfile:
+        'check_hostname': False,
+        'will': {
+            'topic': 'WILL_TOPIC',
+            'message': b'WILL_MESSAGE',
+            'qos': 1,
+            'retain': False
+        },
+    }
+    client = MQTTClient(client_id='cg_sub_001', config=config, loop=loop)
+    await do_sub(client)
 
 
 def test_launcher_runner():
@@ -162,8 +232,8 @@ def test_launcher_runner():
     conf = config['launchers'][1]
     #lc_conf.update(conf['args'])
     cg_util.update(lc_conf, conf['args'])
-    lc2 = OneShotLauncher('test_run', conf['name'], conf['name'], lc_conf,
-                          loop=loop)
+    lc2 = OneInstanceLauncher('test_run', conf['name'], conf['name'], lc_conf,
+                              loop=loop)
 
     sub_confs = []
     for cc_conf in config['launchers'][1]['companions']:
@@ -173,18 +243,10 @@ def test_launcher_runner():
                                              OneShotSubscriber, cp_conf))
 
 
-    #tasks = asyncio.wait(
-    #    [launcher_runner(lc, companion_plugins=[pub_conf, sub_conf]),
-    #     asyncio.sleep(160)])
-
-    #tasks = asyncio.wait(
-    #    [launcher_runner(lc, companion_plugins=[pub_conf, sub_conf]),
-    #     web.start_http_server(port=28080, loop=loop)])
-    #loop.run_until_complete(tasks)
-
     #loop.create_task(launcher_runner(lc, companion_plugins=[pub_conf, sub_conf]))
     loop.create_task(launcher_runner(lc, companion_plugins=pub_confs))
     loop.create_task(launcher_runner(lc2, companion_plugins=sub_confs))
+    #loop.create_task(sub(loop))
     loop.create_task(web.start_http_server(port=28080, loop=loop))
     loop.run_forever()
     print('*****Done*****')

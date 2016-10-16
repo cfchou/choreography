@@ -3,6 +3,7 @@
 import abc
 from typing import List, Union, NamedTuple
 from choreography.cg_exception import CgLauncherException
+from choreography.cg_util import gen_client_id
 import asyncio
 from asyncio import BaseEventLoop
 
@@ -89,6 +90,54 @@ class IdleLauncher(Launcher):
 
 
 @logged
+class OneInstanceLauncher(Launcher):
+    """
+    after 'delay' secs, launch one clients with 'client_id' within 'timeout' secs.
+    """
+    def __init__(self, namespace, plugin_name, name, config,
+                 loop: BaseEventLoop = None):
+        super().__init__(namespace, plugin_name, name, config, loop)
+        # parameters optional
+        self.timeout = self.config.get('timeout', 0.)
+        self.delay = config.get('delay', 0)
+        self.client_id = config.get('client_id')
+        # stateful
+        self.log = self.__log
+        self.fu = None
+        self.log.debug('{} args: client_id={}, timeout={}, delay={}'.
+                       format(self.name, self.client_id, self.timeout,
+                              self.delay))
+
+    async def ask(self, resp: LcResp=None) -> LcCmd:
+        # TODO: delay as a decorator
+        if self.delay > 0:
+            self.log.debug('Idle for {}'.format(self.delay))
+            i = self.delay
+            self.delay = 0
+            return LcIdle(duration=i)
+
+        async def put_conf(q, maxsize):
+            for _ in range(0, maxsize):
+                if self.client_id is None:
+                    # autogen when client_id is None
+                    await q.put((gen_client_id(), self.config))
+                else:
+                    await q.put((self.client_id, self.config))
+
+        # TODO retry if failed
+        if self.fu is not None:
+            self.fu.cancel()
+            self.log.debug('LcTerminate')
+            return LcTerminate()
+
+        queue = asyncio.Queue(loop=self.loop)
+        self.fu = self.loop.create_task(put_conf(queue, 1))
+        self.log.debug('LcFire')
+        return LcFire(rate=1, conf_queue=queue, duration=0,
+                      timeout=self.timeout)
+
+
+@logged
 class OneShotLauncher(Launcher):
     """
     fire, terminate
@@ -101,12 +150,14 @@ class OneShotLauncher(Launcher):
         # parameters optional
         self.rate = self.config.get('rate', 1)
         self.timeout = self.config.get('timeout', 0.)
-        self.__log.debug('{} args: rate={}, timeout={}'.
-                         format(self.name, self.rate, self.timeout))
         self.delay = config.get('delay', 0)
+        self.client_id_prefix = config.get('client_id_prefix')
 
         # stateful
         self.fu = None
+
+        self.__log.debug('{} args: rate={}, timeout={}, delay={}'.
+                         format(self.name, self.rate, self.timeout, self.delay))
 
     async def ask(self, resp: LcResp=None) -> LcCmd:
         if self.delay > 0:
@@ -117,8 +168,12 @@ class OneShotLauncher(Launcher):
 
         async def put_conf(q, maxsize):
             for _ in range(0, maxsize):
-                # autogen when client_id is None
-                await q.put((None, self.config))
+                if self.client_id_prefix is None:
+                    # autogen when client_id is None
+                    await q.put((gen_client_id(), self.config))
+                else:
+                    await q.put((gen_client_id(self.client_id_prefix),
+                                 self.config))
 
         if self.fu is not None:
             self.fu.cancel()

@@ -25,6 +25,9 @@ loggers:
   choreography.launcher_plugins:
     handlers: [console, file]
     level: DEBUG
+  asyncio:
+    handlers: [console, file]
+    level: DEBUG
   hbmqtt:
     handlers: [console, file]
     level: DEBUG

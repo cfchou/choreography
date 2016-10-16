@@ -11,7 +11,6 @@ import asyncio
 from asyncio import BaseEventLoop
 from stevedore.named import NamedExtensionManager, ExtensionManager
 from choreography.cg_exception import CgException, CgLauncherException
-from choreography.cg_launcher import Launcher
 import collections
 from autologging import logged
 
@@ -325,3 +324,32 @@ def update(target, src):
                 target[k] = v
         else:
             target[k] = v
+
+
+def gen_client_id(prefix='cg_cli/'):
+    """
+    Generates random client ID
+    :return:
+    """
+    gen_id = prefix
+
+    for i in range(7, 23):
+        gen_id += chr(random.randint(0, 74) + 48)
+    return gen_id
+
+
+def lorem_ipsum(length: int=0) -> bytes:
+    lorem = b"""Lorem ipsum dolor sit amet, consectetur adipiscing \
+elit, sed do eiusmod tempor incididunt ut labore et dolore magna aliqua. Ut \
+enim ad minim veniam, quis nostrud exercitation ullamco laboris nisi ut \
+aliquip ex ea commodo consequat. Duis aute irure dolor in reprehenderit in \
+voluptate velit esse cillum dolore eu fugiat nulla pariatur. Excepteur sint \
+occaecat cupidatat non proident, sunt in culpa qui officia deserunt mollit \
+anim id est laborum. """
+    ll = len(lorem)
+    if ll < length:
+        q = length // ll
+        m = length % ll
+        return b''.join([lorem for _ in range(0, q)]) + lorem[:m]
+    else:
+        return lorem[:length]
