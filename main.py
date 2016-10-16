@@ -4,18 +4,26 @@ import asyncio
 import copy
 
 from choreography.choreograph import CompanionPluginConf
-from choreography.cg_companion import LinearPublisher, LinearPublisher2, OneShotSubscriber
+from choreography.cg_companion import LinearPublisher, OneShotSubscriber
 from choreography.cg_launcher import OneShotLauncher, OneInstanceLauncher
 from choreography.choreograph import launcher_runner
 from choreography import cg_util
 import yaml
 from prometheus_async.aio import web
+from prometheus_client import Counter, Gauge, Summary, Histogram
+from prometheus_async.aio import count_exceptions, time, track_inprogress
+
+
 import logging.config
 import logging
 log = logging.getLogger(__name__)
 
 
 config = {
+    'prometheus': {
+        'addr': '0.0.0.0',
+        'port': '28080'
+    },
     'default': {
         'launcher': {
             'broker': {
@@ -60,18 +68,20 @@ config = {
                 # after 'delay' secs, launch 'rate' number of clients within
                 # 'timeout' secs.
                 'delay': 5,    # delay to allow subscribers to go first
-                'rate': 200,      # number of publishers
+                'rate': 20,      # number of publishers
                 'timeout': 10,
                 'client_id_prefix': 'cg_pub_'
             },
             'companions': [
                 {
-                    'plugin': 'LinearPublisher2',
+                    'plugin': 'LinearPublisher',
                     'name': 'plugin_pub_0001',
                     #'weight': 1
                     'args': {
                         'topic': 'cg_topic',
-                        'msg': b'===== whatever ===== you ===== say =====',
+                        'msg_len': 128,
+                        #'msg': b'===== whatever ===== you ===== say =====',
+
                         # after 'delay' seconds, publish 'offset' msgs ASAP,
                         # then for every 'step' secs, publish 'rate' clients.
                         #
@@ -81,7 +91,7 @@ config = {
                         'offset': 0,
                         'step': 1,
                         'num_steps': 2,
-                        'rate': 20
+                        'rate': 2
                     }
                 }
             ]
@@ -224,7 +234,7 @@ def test_launcher_runner():
         cp_conf = copy.deepcopy(config['default']['companion'])
         cp_conf.update(cc_conf['args'])
         pub_confs.append(CompanionPluginConf('test_run', cc_conf['name'],
-                                             LinearPublisher2, cp_conf))
+                                             LinearPublisher, cp_conf))
 
 
     # launcher 2
@@ -242,14 +252,17 @@ def test_launcher_runner():
         sub_confs.append(CompanionPluginConf('test_run', cc_conf['name'],
                                              OneShotSubscriber, cp_conf))
 
+    agent = cg_util.SdConsul(name='cg_metrics')
 
     #loop.create_task(launcher_runner(lc, companion_plugins=[pub_conf, sub_conf]))
     loop.create_task(launcher_runner(lc, companion_plugins=pub_confs))
     loop.create_task(launcher_runner(lc2, companion_plugins=sub_confs))
     #loop.create_task(sub(loop))
-    loop.create_task(web.start_http_server(port=28080, loop=loop))
+    loop.create_task(web.start_http_server(addr='192.168.1.35', port=28080, loop=loop,
+                                           service_discovery=agent))
     loop.run_forever()
     print('*****Done*****')
+
 
 
 if __name__ == '__main__':

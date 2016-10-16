@@ -1,21 +1,22 @@
 # vim:fileencoding=utf-8
 
 from hbmqtt.client import MQTTClient, ClientException, ConnectException
+from hbmqtt.errors import HBMQTTException
 from hbmqtt.client import mqtt_connected
 from hbmqtt.session import IncomingApplicationMessage
 from choreography import cg_launcher
 from choreography.cg_launcher import Launcher, LcResp
 from choreography import cg_companion
 from choreography.cg_companion import Companion, CpResp
-from choreography.cg_exception import *
 from choreography import cg_util
 from choreography.cg_util import CompanionPluginConf, RunnerContext
+from choreography.cg_exception import *
+from choreography.cg_metrics import *
 import random
 from typing import List
 import asyncio
 from asyncio import BaseEventLoop
-#from prometheus_client import Counter
-#from prometheus_async.aio import count_exceptions, time, track_inprogress
+# from prometheus_async.aio import count_exceptions, time, track_inprogress
 
 from autologging import logged
 
@@ -63,7 +64,15 @@ class CgClient(MQTTClient):
             default_config.update(config)
             default_broker.update(config.get('broker', {}))
         default_config['broker'] = default_broker
+        if client_id is None:
+            client_id = cg_util.gen_client_id()
         super().__init__(client_id, default_config, loop)
+
+        # since wildcards in subscribe/unsubscribe, we can only try our best to
+        # avoid unnecessary __do_receive.
+        self.companion = None
+        self.recv = None
+
 
     def is_connected(self):
         return self.session.transitions.is_connected()
@@ -76,7 +85,7 @@ class CgClient(MQTTClient):
         return await super().connect(uri, cleansession, cafile, capath,
                                      cadata)
 
-    async def __do_receive(self, companion: Companion):
+    async def __do_receive(self):
         self.__log.debug('constantly receiving msg: {}'.format(self.client_id))
         count = 0
         try:
@@ -88,13 +97,14 @@ class CgClient(MQTTClient):
                         await self._connected_state.wait()
                     msg = await self.deliver_message()
                     data = msg.publish_packet.data
+                    received_bytes_total.inc(len(data))
                     count += 1
                     self.__log.debug('{} receives at {}'.
                                      format(self.client_id, self._loop.time()))
                     self.__log.debug('len={}, msg_{} = {}'.
                                      format(len(data), count,
                                             data.decode('utf-8')))
-                    await companion.received(msg)
+                    await self.companion.received(msg)
                 except asyncio.CancelledError as e:
                     self.__log.info('{} cancelled'.format(self.client_id))
                     break
@@ -108,6 +118,25 @@ class CgClient(MQTTClient):
                     # retry
         finally:
             self.__log.warn(' {} leaves')
+
+    async def publish(self, topic, message, qos=None, retain=None):
+        try:
+            await super().publish(topic, message, qos, retain)
+            published_bytes_total.inc(len(message))
+            return
+        except (HBMQTTException, ClientException) as e:
+            self.__log.exception(e)
+            raise CgClientException from e
+
+    async def subscribe(self, topics):
+        try:
+            await super().subscribe(topics)
+            self.recv = self._loop.create_task(self.__do_receive())
+            subscriptions_total.inc(len(topics))
+            return
+        except (HBMQTTException, ClientException) as e:
+            self.__log.exception(e)
+            raise CgClientException from e
 
     async def __do_fire(self, fire: cg_companion.CpFire):
         @cg_util.convert_coro_exception(ClientException, CgClientException)
@@ -144,9 +173,10 @@ class CgClient(MQTTClient):
         async def _asking(coro):
             return await coro
         self.__log.debug('running: {} with {}'.format(self.client_id, companion))
+        self.companion = companion
         idle_forever = False
         # a task for constantly receiving messages
-        recv = self._loop.create_task(self.__do_receive(companion))
+        recv = self._loop.create_task(self.__do_receive())
         try:
             cmd_prev = None
             cmd_resp = None
@@ -181,11 +211,11 @@ class CgClient(MQTTClient):
                 cmd_prev = cmd
         finally:
             # if idle_forever then CgClient keep receiving messages
-            if idle_forever:
-                self.__log.debug('won\'t companion.ask but CgClient keeps receiving')
-            else:
-                self.__log.debug('won\'t companion.ask and receive')
-                recv.cancel()
+            if not idle_forever and self.recv:
+                self.__log.debug('neither companion.ask nor receive')
+                self.recv.cancel()
+            elif self.recv:
+                self.__log.debug('won\'t companion.ask but keep receiving')
 
 
 def _pick_plugin_conf_func(cps):

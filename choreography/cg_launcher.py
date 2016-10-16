@@ -100,7 +100,7 @@ class OneInstanceLauncher(Launcher):
         # parameters optional
         self.timeout = self.config.get('timeout', 0.)
         self.delay = config.get('delay', 0)
-        self.client_id = config.get('client_id')
+        self.client_id = config.get('client_id', gen_client_id())
         # stateful
         self.log = self.__log
         self.fu = None
@@ -116,14 +116,6 @@ class OneInstanceLauncher(Launcher):
             self.delay = 0
             return LcIdle(duration=i)
 
-        async def put_conf(q, maxsize):
-            for _ in range(0, maxsize):
-                if self.client_id is None:
-                    # autogen when client_id is None
-                    await q.put((gen_client_id(), self.config))
-                else:
-                    await q.put((self.client_id, self.config))
-
         # TODO retry if failed
         if self.fu is not None:
             self.fu.cancel()
@@ -131,7 +123,8 @@ class OneInstanceLauncher(Launcher):
             return LcTerminate()
 
         queue = asyncio.Queue(loop=self.loop)
-        self.fu = self.loop.create_task(put_conf(queue, 1))
+        self.fu = self.loop.create_task(queue.put((self.client_id,
+                                                   self.config)))
         self.log.debug('LcFire')
         return LcFire(rate=1, conf_queue=queue, duration=0,
                       timeout=self.timeout)

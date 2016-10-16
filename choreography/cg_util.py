@@ -12,6 +12,9 @@ from asyncio import BaseEventLoop
 from stevedore.named import NamedExtensionManager, ExtensionManager
 from choreography.cg_exception import CgException, CgLauncherException
 import collections
+import socket
+from consul.aio import Consul
+from consul import Check
 from autologging import logged
 
 
@@ -326,7 +329,7 @@ def update(target, src):
             target[k] = v
 
 
-def gen_client_id(prefix='cg_cli/'):
+def gen_client_id(prefix='cg_cli_'):
     """
     Generates random client ID
     :return:
@@ -339,6 +342,7 @@ def gen_client_id(prefix='cg_cli/'):
 
 
 def lorem_ipsum(length: int=0) -> bytes:
+    # TODO: as it'll be called a hell a lot of time, there's room to improve.
     lorem = b"""Lorem ipsum dolor sit amet, consectetur adipiscing \
 elit, sed do eiusmod tempor incididunt ut labore et dolore magna aliqua. Ut \
 enim ad minim veniam, quis nostrud exercitation ullamco laboris nisi ut \
@@ -353,3 +357,62 @@ anim id est laborum. """
         return b''.join([lorem for _ in range(0, q)]) + lorem[:m]
     else:
         return lorem[:length]
+
+
+def get_outbound_addr(addr: str, port: int) -> str:
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    s.connect((addr, port))
+    outbound = s.getsockname()[0]
+    s.close()
+    return outbound
+
+
+class SdConsul(object):
+    """
+    Almost a copy-paste from prometheus_async.aio.sd.ConsulAgent.
+    With a tweak that allows to set up host/port/scheme.
+    """
+    def __init__(self,
+                 host='127.0.0.1',
+                 port=8500,
+                 scheme='http',
+                 name="app-metrics", service_id=None, tags=(),
+                 token=None, deregister=True):
+        self.host = host
+        self.port = port
+        self.scheme = scheme
+        self.name = name
+        self.service_id = service_id or name
+        self.tags = tags
+        self.token = token
+        self.deregister = deregister
+
+    @asyncio.coroutine
+    def register(self, metrics_server, loop):
+        """
+        :return: A coroutine callable to deregister or ``None``.
+        """
+        consul = Consul(host=self.host, port=self.port, scheme=self.scheme,
+                        token=self.token, loop=loop)
+
+        if not (yield from consul.agent.service.register(
+                name=self.name,
+                service_id=self.service_id,
+                address=metrics_server.socket.addr,
+                port=metrics_server.socket.port,
+                tags=self.tags,
+                check=Check.http(
+                    metrics_server.url, "10s",
+                )
+        )):  # pragma: nocover
+            return None
+
+        @asyncio.coroutine
+        def deregister():
+            try:
+                if self.deregister is True:
+                    yield from consul.agent.service.deregister(self.service_id)
+            finally:
+                consul.close()
+
+        return deregister
