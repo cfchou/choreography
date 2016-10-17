@@ -20,8 +20,12 @@ log = logging.getLogger(__name__)
 
 
 config = {
-    'prometheus': {
-        'addr': '0.0.0.0',
+    'service_discovery': {
+        'host': '10.1.204.14',
+        'port': '8500'
+    },
+    'prometheus_exposure': {
+        'host': '10.1.204.14',
         'port': '28080'
     },
     'default': {
@@ -146,6 +150,22 @@ config = {
     ]
 }
 
+
+def init_launcher(namespace, default, launcher_conf, lc_cls, cp_cls, loop):
+    lc_conf = copy.deepcopy(default['launcher'])
+    cg_util.update(lc_conf, launcher_conf['args'])
+    lc = lc_cls(namespace, launcher_conf['name'], launcher_conf['name'],
+                lc_conf, loop)
+
+    all_cp_confs = []
+    for companion_conf in launcher_conf['companions']:
+        cp_conf = copy.deepcopy(default['companion'])
+        cg_util.update(cp_conf, companion_conf['args'])
+        all_cp_confs.append(CompanionPluginConf('test_run',
+                                                companion_conf['name'],
+                                                cp_cls, cp_conf))
+    return lc, all_cp_confs
+
 from hbmqtt.client import MQTTClient, ConnectException
 from hbmqtt.errors import MQTTException
 
@@ -219,46 +239,55 @@ async def sub(loop):
 def test_launcher_runner():
     loop = asyncio.get_event_loop()
 
-
-    # launcher 1
-    lc_conf = copy.deepcopy(config['default']['launcher'])
-    conf = config['launchers'][0]
-    #lc_conf.update(conf['args'])
-    cg_util.update(lc_conf, conf['args'])
-    lc = OneShotLauncher('test_run', conf['name'], conf['name'], lc_conf,
-                         loop=loop)
+    ## launcher 1
+    #lc_conf = copy.deepcopy(config['default']['launcher'])
+    #conf = config['launchers'][0]
+    #cg_util.update(lc_conf, conf['args'])
+    #lc = OneShotLauncher('test_run', conf['name'], conf['name'], lc_conf,
+    #                     loop=loop)
 
 
-    pub_confs = []
-    for cc_conf in config['launchers'][0]['companions']:
-        cp_conf = copy.deepcopy(config['default']['companion'])
-        cp_conf.update(cc_conf['args'])
-        pub_confs.append(CompanionPluginConf('test_run', cc_conf['name'],
-                                             LinearPublisher, cp_conf))
+    #pub_confs = []
+    #for cc_conf in config['launchers'][0]['companions']:
+    #    cp_conf = copy.deepcopy(config['default']['companion'])
+    #    cp_conf.update(cc_conf['args'])
+    #    pub_confs.append(CompanionPluginConf('test_run', cc_conf['name'],
+    #                                         LinearPublisher, cp_conf))
 
+    ## launcher 2
+    #lc_conf = copy.deepcopy(config['default']['launcher'])
+    #conf = config['launchers'][1]
+    ##lc_conf.update(conf['args'])
+    #cg_util.update(lc_conf, conf['args'])
+    #lc2 = OneInstanceLauncher('test_run', conf['name'], conf['name'], lc_conf,
+    #                          loop=loop)
 
-    # launcher 2
-    lc_conf = copy.deepcopy(config['default']['launcher'])
-    conf = config['launchers'][1]
-    #lc_conf.update(conf['args'])
-    cg_util.update(lc_conf, conf['args'])
-    lc2 = OneInstanceLauncher('test_run', conf['name'], conf['name'], lc_conf,
-                              loop=loop)
+    #sub_confs = []
+    #for cc_conf in config['launchers'][1]['companions']:
+    #    cp_conf = copy.deepcopy(config['default']['companion'])
+    #    cp_conf.update(cc_conf['args'])
+    #    sub_confs.append(CompanionPluginConf('test_run', cc_conf['name'],
+    #                                         OneShotSubscriber, cp_conf))
 
-    sub_confs = []
-    for cc_conf in config['launchers'][1]['companions']:
-        cp_conf = copy.deepcopy(config['default']['companion'])
-        cp_conf.update(cc_conf['args'])
-        sub_confs.append(CompanionPluginConf('test_run', cc_conf['name'],
-                                             OneShotSubscriber, cp_conf))
+    lc1, pub_confs = init_launcher('test_run', config['default'],
+                                   config['launchers'][0], OneShotLauncher,
+                                   LinearPublisher, loop)
 
-    agent = cg_util.SdConsul(name='cg_metrics')
+    lc2, sub_confs = init_launcher('test_run', config['default'],
+                                   config['launchers'][1], OneInstanceLauncher,
+                                   OneShotSubscriber, loop)
 
-    #loop.create_task(launcher_runner(lc, companion_plugins=[pub_conf, sub_conf]))
-    loop.create_task(launcher_runner(lc, companion_plugins=pub_confs))
+    sd_host = config['service_discovery']['host']
+    sd_port = config['service_discovery']['port']
+    agent = cg_util.SdConsul(name='cg_metrics', host=sd_host, port=sd_port)
+
+    exposure = config['prometheus_exposure'].get('host')
+    if exposure is None:
+        exposure = cg_util.get_outbound_addr(sd_host, sd_port)
+    loop.create_task(launcher_runner(lc1, companion_plugins=pub_confs))
     loop.create_task(launcher_runner(lc2, companion_plugins=sub_confs))
     #loop.create_task(sub(loop))
-    loop.create_task(web.start_http_server(addr='192.168.1.35', port=28080, loop=loop,
+    loop.create_task(web.start_http_server(addr=exposure, port=28080, loop=loop,
                                            service_discovery=agent))
     loop.run_forever()
     print('*****Done*****')

@@ -10,3 +10,5 @@ PyYAML
 prometheus_client
 prometheus_async
 autologging
+aiohttp
+python-consul
