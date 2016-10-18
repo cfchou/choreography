@@ -17,3 +17,17 @@ class CgClientException(CgException):
     pass
 
 
+class CgConnectException(CgException):
+    pass
+
+
+class CgDisconnectException(CgException):
+    pass
+
+
+class CgPubException(CgException):
+    pass
+
+
+class CgSubException(CgException):
+    pass

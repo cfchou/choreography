@@ -16,7 +16,7 @@ import random
 from typing import List
 import asyncio
 from asyncio import BaseEventLoop
-# from prometheus_async.aio import count_exceptions, time, track_inprogress
+from prometheus_async.aio import count_exceptions, time, track_inprogress
 
 from autologging import logged
 
@@ -27,7 +27,6 @@ connect_fails_total = Counter('connect_fails_total',
 client_runs_total = Counter('client_runs_total',
                             'total clients connected and run with companions')
 """
-
 
 class CgClientMetrics(object):
     def __init__(self, client_id: str, launcher_name: str='',
@@ -44,7 +43,7 @@ class CgClient(MQTTClient):
     hbmqtt.client.ClientException derives from BaseException which cannot be
     captured by asyncio so that the event loop will be aborted. Leave us no
     chance to examine a Future's result.
-    CgClient replaces ClientException with CgClientException that derives
+    CgClient replaces ClientException with CgException that derives
     Exception.
     """
     def __init__(self, client_id=None, config=None,
@@ -73,17 +72,37 @@ class CgClient(MQTTClient):
         self.companion = None
         self.recv = None
 
-
     def is_connected(self):
-        return self.session.transitions.is_connected()
+        return self._connected_state.is_set()
 
-    #@count_exceptions(connect_fails_total)
-    @cg_util.convert_coro_exception(ClientException, CgClientException)
     async def connect(self, uri=None, cleansession=None, cafile=None,
                       capath=None, cadata=None):
-        self.__log.debug('connect to {}'.format(uri))
-        return await super().connect(uri, cleansession, cafile, capath,
-                                     cadata)
+        try:
+            self.__log.debug('connect to {}'.format(uri))
+            ret = await super().connect(uri, cleansession, cafile, capath,
+                                        cadata)
+            connections_total.inc()
+            return ret
+        except ClientException as e:
+            self.__log.exception(e)
+            raise CgConnectException from e
+
+    @time(connect_time)
+    async def _connect_coro(self):
+        connect_attempts_total.inc()
+        await super()._connect_coro()
+
+    async def handle_connection_close(self):
+        ret = await super().handle_connection_close()
+        if not self.is_connected():
+            connections_total.dec()
+        return ret
+
+    async def deliver_message(self, timeout=None):
+        msg = await super().deliver_message(timeout)
+        data = msg.publish_packet.data
+        received_bytes_total.inc(len(data))
+        return msg
 
     async def __do_receive(self):
         self.__log.debug('constantly receiving msg: {}'.format(self.client_id))
@@ -91,13 +110,13 @@ class CgClient(MQTTClient):
         try:
             while True:
                 try:
+                    # copy from @hbmqtt.client.mqtt_connected
                     if not self._connected_state.is_set():
                         self.__log.warning("{} not connected, waiting for it".
                                            format(self.client_id))
                         await self._connected_state.wait()
                     msg = await self.deliver_message()
                     data = msg.publish_packet.data
-                    received_bytes_total.inc(len(data))
                     count += 1
                     self.__log.debug('{} receives at {}'.
                                      format(self.client_id, self._loop.time()))
@@ -106,12 +125,13 @@ class CgClient(MQTTClient):
                                             data.decode('utf-8')))
                     await self.companion.received(msg)
                 except asyncio.CancelledError as e:
+                    self.__log.exception(e)
                     self.__log.info('{} cancelled'.format(self.client_id))
                     break
                 except ConnectException as e:
                     # assert issubclass(ConnectException, ClientException)
                     self.__log.exception(e)
-                    raise CgClientException from e
+                    raise CgConnectException from e
                 except (ClientException, Exception) as e:
                     # assert issubclass(ClientException, BaseException)
                     self.__log.exception(e)
@@ -119,27 +139,37 @@ class CgClient(MQTTClient):
         finally:
             self.__log.warn(' {} leaves')
 
-    async def publish(self, topic, message, qos=None, retain=None):
-        try:
-            await super().publish(topic, message, qos, retain)
-            published_bytes_total.inc(len(message))
-            return
-        except (HBMQTTException, ClientException) as e:
-            self.__log.exception(e)
-            raise CgClientException from e
-
+    @time(subscribe_time)
     async def subscribe(self, topics):
         try:
-            await super().subscribe(topics)
+            ret = await super().subscribe(topics)
             self.recv = self._loop.create_task(self.__do_receive())
-            subscriptions_total.inc(len(topics))
-            return
+            subscribe_total.inc()
+            return ret
         except (HBMQTTException, ClientException) as e:
             self.__log.exception(e)
-            raise CgClientException from e
+            raise CgSubException from e
+
+    @time(publish_time)
+    async def publish(self, topic, message, qos=None, retain=None):
+        try:
+            ret = await super().publish(topic, message, qos, retain)
+            published_bytes_total.inc(len(message))
+            publish_total.inc()
+            return ret
+        except (HBMQTTException, ClientException) as e:
+            self.__log.exception(e)
+            raise CgPubException from e
+
+    async def disconnect(self):
+        try:
+            ret = await super().disconnect()
+            return ret
+        except (HBMQTTException, ClientException) as e:
+            self.__log.exception(e)
+            raise CgSubException from e
 
     async def __do_fire(self, fire: cg_companion.CpFire):
-        @cg_util.convert_coro_exception(ClientException, CgClientException)
         async def __fire(_f):
             if isinstance(_f, cg_companion.CpSubscribe):
                 await self.subscribe(_f.topics)
