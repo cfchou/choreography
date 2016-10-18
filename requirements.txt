@@ -12,3 +12,4 @@ prometheus_async
 autologging
 aiohttp
 python-consul
+click

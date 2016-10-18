@@ -100,7 +100,13 @@ class OneInstanceLauncher(Launcher):
         # parameters optional
         self.timeout = self.config.get('timeout', 0.)
         self.delay = config.get('delay', 0)
-        self.client_id = config.get('client_id', gen_client_id())
+        self.client_id = config.get('client_id')
+        if self.client_id is None:
+            client_id_prefix = config.get('client_id_prefix')
+            if client_id_prefix is None:
+                self.client_id = gen_client_id()
+            else:
+                self.client_id = gen_client_id(prefix=client_id_prefix)
         # stateful
         self.log = self.__log
         self.fu = None
