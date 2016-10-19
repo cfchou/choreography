@@ -22,17 +22,20 @@ log = logging.getLogger(__name__)
 
 config = {
     'service_discovery': {
-        'host': '172.31.29.195',
+        #'host': '172.31.29.195',
+        'host': '127.0.0.1',
         'port': '8500'
     },
     'prometheus_exposure': {
-        'host': '172.31.29.195',
+        #'host': '172.31.29.195',
+        'host': '127.0.0.1',
         'port': '28080'
     },
     'default': {
         'launcher': {
             'broker': {
                 'uri': 'mqtt://127.0.0.1',
+                #'uri': 'mqtts://000:passwd@perf.int.mqtt.trendmicro.com',
                 'cafile': 'server.pem',
                 #'capath':
                 #'cadata':
@@ -95,7 +98,7 @@ config = {
                         'qos': 1,
                         'offset': 0,
                         'step': 1,
-                        'num_steps': 2,
+                        'num_steps': 5,
                         'rate': 2
                     }
                 }
@@ -169,36 +172,33 @@ def init_launcher(namespace, default, launcher_conf, lc_cls, cp_cls, loop):
     return lc, all_cp_confs
 
 
-@click.command()
-@click.option('--pub', 'role', flag_value='pub', default=True, help='either act as a publisher(default)')
-@click.option('--sub', 'role', flag_value='sub', help='or act as a subscriber')
-@click.option('--sd', type=(str, int), default=(None, None), help='host port of service discovery service')
-@click.option('--exposure', type=(str, int), default=(None, None), help='host port to expose metrics')
-def run(role, sd, exposure):
+def _run(role, sd, sd_id, exposure):
+    log.info('*****role:{}, sd:{}, exposure:{}*****'.format(role, sd, exposure))
     loop = asyncio.get_event_loop()
-
-    log.info('*****Reading config*****')
-
-    if role:
-        lc1, pub_confs = init_launcher('test_run', config['default'],
-                                       config['launchers'][0], OneShotLauncher,
-                                       LinearPublisher, loop)
-        loop.create_task(launcher_runner(lc1, companion_plugins=pub_confs))
-    else:
-        lc2, sub_confs = init_launcher('test_run', config['default'],
+    if role == 'sub':
+        sub, sub_confs = init_launcher('test_run', config['default'],
                                        config['launchers'][1], OneInstanceLauncher,
                                        OneShotSubscriber, loop)
-        loop.create_task(launcher_runner(lc2, companion_plugins=sub_confs))
+        loop.create_task(launcher_runner(sub, companion_plugins=sub_confs))
+    else:
+        pub, pub_confs = init_launcher('test_run', config['default'],
+                                       config['launchers'][0], OneShotLauncher,
+                                       LinearPublisher, loop)
+        loop.create_task(launcher_runner(pub, companion_plugins=pub_confs))
 
     sd_host = config['service_discovery']['host'] if sd[0] is None else sd[0]
     sd_port = config['service_discovery']['port'] if sd[1] is None else sd[1]
+    log.info('*****Service discovery service {}:{}*****'.format(sd_host,
+                                                                sd_port))
 
     ex_host = config['prometheus_exposure']['host'] if exposure[0] is None \
         else exposure[0]
     ex_port = config['prometheus_exposure']['port'] if exposure[1] is None \
         else exposure[1]
+    log.info('*****Metrics exposed at {}:{}*****'.format(ex_host, ex_port))
 
-    agent = cg_util.SdConsul(name='cg_metrics', host=sd_host, port=sd_port)
+    agent = cg_util.SdConsul(name='cg_metrics', service_id=sd_id, host=sd_host,
+                             port=sd_port)
 
     loop.create_task(web.start_http_server(addr=ex_host, port=ex_port,
                                            loop=loop, service_discovery=agent))
@@ -207,11 +207,26 @@ def run(role, sd, exposure):
     log.info('*****Done*****')
 
 
-if __name__ == '__main__':
-    with open('log_config.yaml') as fh:
+@click.command()
+@click.option('--pub', 'role', flag_value='pub', default=True, help='either act as a publisher(default)')
+@click.option('--sub', 'role', flag_value='sub', help='or act as a subscriber')
+@click.option('--sd', type=(str, int), default=(None, None), help='host port of service discovery service')
+@click.option('--sd_id', default='cg_client', help='service id(must be unique to service discovery agent')
+@click.option('--exposure', type=(str, int), default=(None, None), help='host port to expose metrics')
+@click.option('--log_config', default='log_config.yaml', help='log_config.yaml')
+def run(role, sd, sd_id, exposure, log_config):
+    print('*****Reading config*****')
+    print('*****role:{}, sd:{}, sd_id:{}, exposure:{}, log_config:{}*****'.
+          format(role, sd, sd_id, exposure, log_config))
+    with open(log_config) as fh:
         try:
             logging.config.dictConfig(yaml.load(fh))
-            run()
+            _run(role, sd, sd_id, exposure)
         finally:
             logging.shutdown()
+    print('*****Exits*****')
+
+
+if __name__ == '__main__':
+    run()
 

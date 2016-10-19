@@ -87,14 +87,14 @@ class CgClient(MQTTClient):
             self.__log.exception(e)
             raise CgConnectException from e
 
-    @time(connect_time)
+    @time(connect_hist)
     async def _connect_coro(self):
-        connect_attempts_total.inc()
         await super()._connect_coro()
 
     async def handle_connection_close(self):
         ret = await super().handle_connection_close()
         if not self.is_connected():
+            # disconnect passively
             connections_total.dec()
         return ret
 
@@ -102,6 +102,7 @@ class CgClient(MQTTClient):
         msg = await super().deliver_message(timeout)
         data = msg.publish_packet.data
         received_bytes_total.inc(len(data))
+        received_total.inc()
         return msg
 
     async def __do_receive(self):
@@ -139,23 +140,21 @@ class CgClient(MQTTClient):
         finally:
             self.__log.warn(' {} leaves')
 
-    @time(subscribe_time)
+    @time(subscribe_hist)
     async def subscribe(self, topics):
         try:
             ret = await super().subscribe(topics)
             self.recv = self._loop.create_task(self.__do_receive())
-            subscribe_total.inc()
             return ret
         except (HBMQTTException, ClientException) as e:
             self.__log.exception(e)
             raise CgSubException from e
 
-    @time(publish_time)
+    @time(publish_hist)
     async def publish(self, topic, message, qos=None, retain=None):
         try:
             ret = await super().publish(topic, message, qos, retain)
             published_bytes_total.inc(len(message))
-            publish_total.inc()
             return ret
         except (HBMQTTException, ClientException) as e:
             self.__log.exception(e)
@@ -164,6 +163,8 @@ class CgClient(MQTTClient):
     async def disconnect(self):
         try:
             ret = await super().disconnect()
+            # disconnect actively
+            connections_total.dec()
             return ret
         except (HBMQTTException, ClientException) as e:
             self.__log.exception(e)
@@ -205,8 +206,6 @@ class CgClient(MQTTClient):
         self.__log.debug('running: {} with {}'.format(self.client_id, companion))
         self.companion = companion
         idle_forever = False
-        # a task for constantly receiving messages
-        recv = self._loop.create_task(self.__do_receive())
         try:
             cmd_prev = None
             cmd_resp = None

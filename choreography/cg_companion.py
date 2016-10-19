@@ -205,9 +205,16 @@ class LinearPublisher(Companion):
 
     def msg_marked(self):
         self.total += 1
-        msg = lorem_ipsum(self.msg_len) if self.msg is None else self.msg
-        mark = '{:05} {} {}:'.format(self.total, self.name, self.loop.time())
-        return bytes(mark.encode('utf-8')) + msg
+        mark = bytes('{:05} {} {}:'.
+                     format(self.total, self.name, self.loop.time()).
+                     encode('utf-8'))
+        if self.msg is None:
+            if self.msg_len > len(mark):
+                return mark + lorem_ipsum(self.msg_len - len(mark))
+            else:
+                return mark
+        else:
+            return self.msg
 
     async def ask(self, resp: CpResp = None) -> CpCmd:
         if self.delay > 0:
