@@ -4,8 +4,8 @@ import asyncio
 import copy
 
 from choreography.choreograph import CompanionPluginConf
-from choreography.cg_companion import LinearPublisher, OneShotSubscriber
-from choreography.cg_launcher import OneShotLauncher, OneInstanceLauncher
+from choreography.cg_companion import SelfSubscriber
+from choreography.cg_launcher import OneShotLauncher
 from choreography.choreograph import launcher_runner
 from choreography import cg_util
 import yaml
@@ -35,7 +35,6 @@ config = {
         'launcher': {
             'broker': {
                 'uri': 'mqtt://127.0.0.1',
-                #'uri': 'mqtts://000:passwd@perf.int.mqtt.trendmicro.com',
                 'cafile': 'server.pem',
                 #'capath':
                 #'cadata':
@@ -82,11 +81,10 @@ config = {
             },
             'companions': [
                 {
-                    'plugin': 'LinearPublisher',
+                    'plugin': 'SelfSubscriber',
                     'name': 'plugin_pub_0001',
                     #'weight': 1
                     'args': {
-                        'topic': 'cg_topic',
                         'msg_len': 128,
                         #'msg': b'===== whatever ===== you ===== say =====',
 
@@ -98,58 +96,10 @@ config = {
                         'qos': 1,
                         'offset': 0,
                         'step': 1,
-                        'num_steps': 5,
+                        'num_steps': -1,
                         'rate': 2
                     }
                 }
-            ]
-        },
-        {
-            'plugin': 'OneInstanceLauncher',
-            'name': 'launch_sub',
-            'args': {
-                'broker': {
-                    'cleansession': False,
-                },
-                'keep_alive': 600,
-                'client_id_prefix': 'cg_sub_'
-                #'client_id': 'cg_sub_001'
-            },
-            'companions': [
-                {
-                    'plugin': 'OneShotSubscriber',
-                    'name': 'plugin_sub_0001',
-                    'weight': 1,
-                    'args': {
-                        # after 'delay' secs, subscribe 'topics' ASAP,
-                        # then idle for 'duration' for receiving messages.
-                        # disconnect when 'duration' eclapsed.
-                        # if 'duration' == 0 then idle forever.
-                        'topics': [
-                            {
-                                'topic': 'cg_topic',
-                                'qos': 1
-                            }
-                        ],
-                        'delay': 0,
-                        'duration': 0
-                    }
-                }
-                #,{
-                #    'plugin': 'OneShotSubscriber',
-                #    'name': 'plugin_sub_0002',
-                #    'weight': 1,
-                #    'args': {
-                #        'topics': [
-                #            {
-                #                'topic': 'cg_topic2',
-                #                'qos': 1
-                #            }
-                #        ],
-                #        'delay': 0,
-                #        'duration': 0
-                #    }
-                #}
             ]
         }
     ]
@@ -172,19 +122,13 @@ def init_launcher(namespace, default, launcher_conf, lc_cls, cp_cls, loop):
     return lc, all_cp_confs
 
 
-def _run(role, sd, sd_id, exposure):
-    log.info('*****role:{}, sd:{}, exposure:{}*****'.format(role, sd, exposure))
+def _run(sd, sd_id, exposure):
+    log.info('*****sd:{}, exposure:{}*****'.format(sd, exposure))
     loop = asyncio.get_event_loop()
-    if role == 'sub':
-        sub, sub_confs = init_launcher('test_run', config['default'],
-                                       config['launchers'][1], OneInstanceLauncher,
-                                       OneShotSubscriber, loop)
-        loop.create_task(launcher_runner(sub, companion_plugins=sub_confs))
-    else:
-        pub, pub_confs = init_launcher('test_run', config['default'],
-                                       config['launchers'][0], OneShotLauncher,
-                                       LinearPublisher, loop)
-        loop.create_task(launcher_runner(pub, companion_plugins=pub_confs))
+    sub, sub_confs = init_launcher('test_run', config['default'],
+                                   config['launchers'][1],
+                                   OneShotLauncher, SelfSubscriber, loop)
+    loop.create_task(launcher_runner(sub, companion_plugins=sub_confs))
 
     sd_host = config['service_discovery']['host'] if sd[0] is None else sd[0]
     sd_port = config['service_discovery']['port'] if sd[1] is None else sd[1]
@@ -208,20 +152,18 @@ def _run(role, sd, sd_id, exposure):
 
 
 @click.command()
-@click.option('--pub', 'role', flag_value='pub', default=True, help='either act as a publisher(default)')
-@click.option('--sub', 'role', flag_value='sub', help='or act as a subscriber')
 @click.option('--sd', type=(str, int), default=(None, None), help='host port of service discovery service')
 @click.option('--sd_id', default='cg_client', help='service id(must be unique to service discovery agent')
 @click.option('--exposure', type=(str, int), default=(None, None), help='host port to expose metrics')
 @click.option('--log_config', default='log_config.yaml', help='log_config.yaml')
-def run(role, sd, sd_id, exposure, log_config):
+def run(sd, sd_id, exposure, log_config):
     print('*****Reading config*****')
-    print('*****role:{}, sd:{}, sd_id:{}, exposure:{}, log_config:{}*****'.
-          format(role, sd, sd_id, exposure, log_config))
+    print('*****sd:{}, sd_id:{}, exposure:{}, log_config:{}*****'.
+          format(sd, sd_id, exposure, log_config))
     with open(log_config) as fh:
         try:
             logging.config.dictConfig(yaml.load(fh))
-            _run(role, sd, sd_id, exposure)
+            _run(sd, sd_id, exposure)
         finally:
             logging.shutdown()
     print('*****Exits*****')

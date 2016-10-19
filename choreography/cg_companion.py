@@ -7,6 +7,7 @@ from hbmqtt.session import IncomingApplicationMessage
 from choreography.cg_exception import CgCompanionException
 from choreography.cg_util import lorem_ipsum
 from typing import List, Tuple, Union, NamedTuple
+import random
 from autologging import logged
 
 
@@ -330,5 +331,158 @@ class OneShotSubscriber(Companion):
         return CpIdle(duration=self.duration)
 
 
+from prometheus_client import Counter, Gauge, Summary, Histogram
+fly_hist = Histogram('cg_pubsub_fly_hist', 'pubsub fly time')
+
+@logged
+class SelfSubscriber(Companion):
+    """
+    SelfSubscriber, after 'delay' or 'random_delay' secs, subscribes a topic,
+    then acts like a LinearPublisher to publish to the topic.
+
+    Given that:
+        'step' is the number of secs per step
+        'rate' is the number of publishes per 'step'
+        'num_steps' is the number of 'step's
+        total = offset + rate * num_steps
+
+    num_steps < 0 means infinite
+
+    Other configs:
+    if no 'topic', use 'client_id' as the topic
+    'msg_len' is ignored if 'msg' is presented.
+
+    """
+    def __init__(self, namespace, plugin_name, name, config,
+                 loop: BaseEventLoop = None):
+        super().__init__(namespace, plugin_name, name, config, loop)
+        # parameters required
+        self.topic = config.get('topic', name)
+
+        # parameters optional
+        self.msg_len = config.get('msg_len', 0)
+        self.msg = config.get('msg')    # ignore 'msg_len'
+        self.qos = config.get('qos', 0)
+        self.retain = config.get('retain', False)
+        self.delay = config.get('delay')
+        if self.delay is None:
+            self.delay = random.randint(0, config.get('delay_random', 0))
+
+        self.offset = config.get('offset', 0)
+        self.rate = config.get('rate', 1)
+        self.step = config.get('step', 1)
+        self.num_steps = config.get('num_steps', 1)
+        self.disconnect_when_done = config.get('disconnect_when_done', True)
+
+        if self.qos < 0 or self.qos > 2:
+            raise CgCompanionException('invalid qos {}'.format(self.qos))
+
+        # stateful
+        self.step_start = 0
+        self.step_count = 0
+        self.rate_count = 0
+        self.total = 0
+        self.subscribed = False
+
+        # short name for log
+        self.sn = 'cg_pub_' + self.name[-16:]
+
+        def _debug(s):
+            self.__log.debug('{} {}'.format(self.sn, s))
+
+        def _info(s):
+            self.__log.info('{} {}'.format(self.sn, s))
+
+        def _warn(s):
+            self.__log.warn('{} {}'.format(self.sn, s))
+
+        self._debug = _debug
+        self._info = _info
+        self._warn = _warn
+
+        self._info('offset({}) + rate({}) * num_steps({}); step({})'.
+                   format(self.offset, self.rate, self.num_steps, self.step))
+
+    def _companion_done(self):
+        self._debug('step done {}, {}'.format(self.step_count, self.sn))
+        if self.disconnect_when_done:
+            return CpDisconnect()
+        else:
+            return CpTerminate()
+
+    def msg_marked(self):
+        self.total += 1
+        mark = bytes('{:05} {} {}:'.
+                     format(self.total, self.name, self.loop.time()).
+                     encode('utf-8'))
+        if self.msg is None:
+            if self.msg_len > len(mark):
+                return mark + lorem_ipsum(self.msg_len - len(mark))
+            else:
+                return mark
+        else:
+            return self.msg
+
+    async def ask(self, resp: CpResp = None) -> CpCmd:
+        if self.delay > 0:
+            self._info('{}: step done {}, {}'.format(self.sn, self.step_count))
+            i = self.delay
+            self.delay = 0
+            return CpIdle(duration=i)
+
+        if not self.subscribed:
+            # TODO: check sub successful
+            self.subscribed = True
+            return CpSubscribe([(self.topics, self.qos)])
+
+        # publish all 'offset' number of messages
+        while self.offset > 0:
+            self._debug('{}: offset {}'.format(self.sn, self.offset))
+            self.offset -= 1
+            return CpPublish(topic=self.topic, msg=self.msg_marked(),
+                             qos=self.qos, retain=self.retain)
+
+        # self.step_count is finished steps
+        if self.rate <= 0 or self.step_count >= self.num_steps >= 0:
+            return self._companion_done()
+
+        now = self.loop.time()
+        if self.rate_count >= self.rate:
+            # the rate reached
+            self._info('{}: step {} done, fired {}'.
+                       format(self.sn, self.step_count, self.rate_count))
+            this_step = self.step_count
+            self.step_count += 1
+            self.rate_count = 0
+
+            if self.step_start + self.step > now:
+                idle = self.step_start + self.step - now
+                self._info('{}: step {} idle {}'.format(self.sn, this_step,
+                                                        idle))
+                return CpIdle(duration=idle)
+            else:
+                self._info('{}: step {} late, takes {} secs'.
+                           format(self.sn, this_step, now - self.step_start))
+                if self.step_count >= self.num_steps >= 0:
+                    return self._companion_done()
+
+        if self.rate_count == 0:
+            self.step_start = now
+            self._info('{}: step {} starts at {}'.
+                       format(self.sn, self.step_count, now))
+
+        self.rate_count += 1
+        self._debug('{}: step {} ongoing, firing {}'.
+                    format(self.sn, self.step_count, self.rate_count))
+        return CpPublish(topic=self.topic, msg=self.msg_marked(),
+                         qos=self.qos, retain=self.retain)
+
+    async def received(self, msg: IncomingApplicationMessage):
+        # see self.msg_marked()
+        # TODO: improve performance
+        x = msg.publish_packet.data.decode('utf-8').split(' ')[2]
+        diff = self.loop.time() - float(x[:x.find(':')])
+        self._debug('fly: {}'.format(diff))
+        fly_hist.observe(diff)
 
 

@@ -308,8 +308,6 @@ class RunnerContext(object):
                              launcher_plugins, launcher_companion_plugins)
 
 
-
-
 def update(target, src):
     """
     'target' is recursively updated by 'src'
@@ -332,6 +330,8 @@ def update(target, src):
 def gen_client_id(prefix='cg_cli_'):
     """
     Generates random client ID
+    Note that: '/', '#', '+' will not be chosen. Which makes the result a valid
+    topic name.
     :return:
     """
     gen_id = prefix
