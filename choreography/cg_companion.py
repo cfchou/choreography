@@ -231,7 +231,7 @@ class LinearPublisher(Companion):
                              qos=self.qos, retain=self.retain)
 
         # self.step_count is finished steps
-        if self.rate <= 0 or self.step_count >= self.num_steps:
+        if self.rate <= 0 or self.step_count >= self.num_steps >= 0:
             return self._companion_done()
 
         now = self.loop.time()
@@ -251,7 +251,7 @@ class LinearPublisher(Companion):
             else:
                 self._info('{}: step {} late, takes {} secs'.
                             format(self.sn, this_step, now - self.step_start))
-                if self.step_count >= self.num_steps:
+                if self.step_count >= self.num_steps >= 0:
                     return self._companion_done()
 
         if self.rate_count == 0:
