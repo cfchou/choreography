@@ -23,12 +23,12 @@ log = logging.getLogger(__name__)
 config = {
     'service_discovery': {
         #'host': '172.31.29.195',
-        'host': '127.0.0.1',
+        'host': '192.168.1.36',
         'port': '8500'
     },
     'prometheus_exposure': {
         #'host': '172.31.29.195',
-        'host': '127.0.0.1',
+        'host': '192.168.1.36',
         'port': '28080'
     },
     'default': {
@@ -82,7 +82,7 @@ config = {
             'companions': [
                 {
                     'plugin': 'SelfSubscriber',
-                    'name': 'plugin_pub_0001',
+                    'name': 'plugin_subpub_0001',
                     #'weight': 1
                     'args': {
                         'msg_len': 128,
@@ -92,7 +92,8 @@ config = {
                         # then for every 'step' secs, publish 'rate' clients.
                         #
                         # total = 'offset' + 'rate' * 'num_steps'
-                        #'delay': 3
+                        'delay': 1,
+                        'delay_max': 3,
                         'qos': 1,
                         'offset': 0,
                         'step': 1,
@@ -126,7 +127,7 @@ def _run(sd, sd_id, exposure):
     log.info('*****sd:{}, exposure:{}*****'.format(sd, exposure))
     loop = asyncio.get_event_loop()
     sub, sub_confs = init_launcher('test_run', config['default'],
-                                   config['launchers'][1],
+                                   config['launchers'][0],
                                    OneShotLauncher, SelfSubscriber, loop)
     loop.create_task(launcher_runner(sub, companion_plugins=sub_confs))
 

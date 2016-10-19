@@ -94,7 +94,7 @@ class CpResp(object):
 
 class Companion(abc.ABC):
     """
-    Each of 'ask' and 'received' would be called sequentially.
+    Each of 'ask' and 'received' are called sequentially.
     However, implementation must take care of concurrency, if any, between them.
     For example,
     async def received(...):
@@ -104,7 +104,9 @@ class Companion(abc.ABC):
         self.some_state = True
         await some_thing
         if not self.some_state:
-            print('received is called during await some_thing')
+            print('received was called during await some_thing')
+
+    If concurrency is a concern, read 18.5.7. Synchronization primitives.
     """
     @abc.abstractmethod
     def __init__(self, namespace, plugin_name, name, config,
@@ -331,13 +333,25 @@ class OneShotSubscriber(Companion):
         return CpIdle(duration=self.duration)
 
 
+class DelayMixin(object):
+    """
+    """
+    def get_delay(self, config):
+        delay = config.get('delay', 0)
+        delay_max = config.get('delay_max', delay)
+        if delay_max >= delay >= 0:
+            return random.uniform(delay, delay_max)
+        else:
+            return 0
+
+
 from prometheus_client import Counter, Gauge, Summary, Histogram
 fly_hist = Histogram('cg_pubsub_fly_hist', 'pubsub fly time')
 
 @logged
-class SelfSubscriber(Companion):
+class SelfSubscriber(DelayMixin, Companion):
     """
-    SelfSubscriber, after 'delay' or 'random_delay' secs, subscribes a topic,
+    SelfSubscriber, after 'delay'~'delay_max' secs, subscribes a topic,
     then acts like a LinearPublisher to publish to the topic.
 
     Given that:
@@ -364,9 +378,7 @@ class SelfSubscriber(Companion):
         self.msg = config.get('msg')    # ignore 'msg_len'
         self.qos = config.get('qos', 0)
         self.retain = config.get('retain', False)
-        self.delay = config.get('delay')
-        if self.delay is None:
-            self.delay = random.randint(0, config.get('delay_random', 0))
+        self.delay = self.get_delay(config)
 
         self.offset = config.get('offset', 0)
         self.rate = config.get('rate', 1)
@@ -396,9 +408,13 @@ class SelfSubscriber(Companion):
         def _warn(s):
             self.__log.warn('{} {}'.format(self.sn, s))
 
+        def _exception(s):
+            self.__log.warn('{} {}'.format(self.sn, s))
+
         self._debug = _debug
         self._info = _info
         self._warn = _warn
+        self._exception = _exception
 
         self._info('offset({}) + rate({}) * num_steps({}); step({})'.
                    format(self.offset, self.rate, self.num_steps, self.step))
@@ -425,7 +441,7 @@ class SelfSubscriber(Companion):
 
     async def ask(self, resp: CpResp = None) -> CpCmd:
         if self.delay > 0:
-            self._info('{}: step done {}, {}'.format(self.sn, self.step_count))
+            self._info('{}: step done {}'.format(self.sn, self.step_count))
             i = self.delay
             self.delay = 0
             return CpIdle(duration=i)
@@ -433,7 +449,7 @@ class SelfSubscriber(Companion):
         if not self.subscribed:
             # TODO: check sub successful
             self.subscribed = True
-            return CpSubscribe([(self.topics, self.qos)])
+            return CpSubscribe([(self.topic, self.qos)])
 
         # publish all 'offset' number of messages
         while self.offset > 0:
@@ -478,11 +494,19 @@ class SelfSubscriber(Companion):
                          qos=self.qos, retain=self.retain)
 
     async def received(self, msg: IncomingApplicationMessage):
-        # see self.msg_marked()
-        # TODO: improve performance
-        x = msg.publish_packet.data.decode('utf-8').split(' ')[2]
-        diff = self.loop.time() - float(x[:x.find(':')])
-        self._debug('fly: {}'.format(diff))
-        fly_hist.observe(diff)
+        try:
+            # see self.msg_marked()
+            # mark = bytes('{:05} {} {}:'....)
+            x = msg.publish_packet.data.decode('utf-8')
+            i = x.find(' ')
+            j = x.find(' ', i+1)
+            k = x.find(':', j+1)
+            diff = self.loop.time() - float(x[j+1:k])
+            self._debug('fly: {}'.format(diff))
+            fly_hist.observe(diff)
+        except Exception as e:
+            self._exception(e)
+            # swallow
+
 
 

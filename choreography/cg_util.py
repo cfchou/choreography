@@ -416,3 +416,4 @@ class SdConsul(object):
                 consul.close()
 
         return deregister
+
