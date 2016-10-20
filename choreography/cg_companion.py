@@ -348,6 +348,7 @@ class DelayMixin(object):
 from prometheus_client import Counter, Gauge, Summary, Histogram
 fly_hist = Histogram('cg_pubsub_fly_hist', 'pubsub fly time')
 
+
 @logged
 class SelfSubscriber(DelayMixin, Companion):
     """

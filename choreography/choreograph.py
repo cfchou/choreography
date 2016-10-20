@@ -118,12 +118,14 @@ class CgClient(MQTTClient):
                         await self._connected_state.wait()
                     msg = await self.deliver_message()
                     data = msg.publish_packet.data
+                    data_len = len(data)
+                    data_uc = data.decode('utf-8')
                     count += 1
-                    self.__log.debug('{} receives at {}'.
-                                     format(self.client_id, self._loop.time()))
-                    self.__log.debug('len={}, msg_{} = {}'.
-                                     format(len(data), count,
-                                            data.decode('utf-8')))
+                    self.__log.info('{} receives {} bytes at {}'.
+                                     format(self.client_id, data_len,
+                                            self._loop.time()))
+                    prefix = data_uc[:min(48, data_len)]
+                    self.__log.info('msg_{} = {}'.format(count, prefix))
                     await self.companion.received(msg)
                 except asyncio.CancelledError as e:
                     self.__log.exception(e)

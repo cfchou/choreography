@@ -6,6 +6,7 @@ from choreography.cg_exception import CgLauncherException
 from choreography.cg_util import gen_client_id
 import asyncio
 from asyncio import BaseEventLoop
+import random
 
 from autologging import logged
 
@@ -136,8 +137,19 @@ class OneInstanceLauncher(Launcher):
                       timeout=self.timeout)
 
 
+class DelayMixin(object):
+    """
+    """
+    def get_delay(self, config):
+        delay = config.get('delay', 0)
+        delay_max = config.get('delay_max', delay)
+        if delay_max >= delay >= 0:
+            return random.uniform(delay, delay_max)
+        else:
+            return 0
+
 @logged
-class OneShotLauncher(Launcher):
+class OneShotLauncher(DelayMixin, Launcher):
     """
     fire, terminate
     after 'delay' secs, launch 'rate' number of clients within 'timeout' secs.
@@ -149,7 +161,7 @@ class OneShotLauncher(Launcher):
         # parameters optional
         self.rate = self.config.get('rate', 1)
         self.timeout = self.config.get('timeout', 0.)
-        self.delay = config.get('delay', 0)
+        self.delay = self.get_delay(config)
         self.client_id_prefix = config.get('client_id_prefix')
 
         # stateful
