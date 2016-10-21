@@ -14,6 +14,7 @@ from prometheus_async.aio import web
 from prometheus_client import Counter, Gauge, Summary, Histogram
 from prometheus_async.aio import count_exceptions, time, track_inprogress
 
+import resource
 
 import logging.config
 import logging
@@ -34,7 +35,7 @@ config = {
     'default': {
         'launcher': {
             'broker': {
-                'uri': 'mqtts://127.0.0.1',
+                'uri': 'mqtt://127.0.0.1',
                 'cafile': 'server.pem',
                 #'capath':
                 #'cadata':
@@ -79,9 +80,9 @@ config = {
                 # 'auto_reconnect' will affect the time well.
                 'delay': 0,         # delay
                 'delay_max': 0,     # delay for random.uniform(delay, delay_max)
-                'rate': 4,
+                'rate': 2,
                 'step': 1,          # connect 'rate' clients using 'step' secs
-                'num_steps': 70,     # total = 'offset' + 'rate' * 'num_steps'
+                'num_steps': 2,     # total = 'offset' + 'rate' * 'num_steps'
                 'client_id_prefix': 'cg_pub_'
             },
             'companions': [
@@ -101,7 +102,7 @@ config = {
                         'delay_max': 10,
                         'qos': 1,
                         'offset': 0,
-                        'step': 60,
+                        'step': 2,
                         'num_steps': -1,
                         'rate': 1
                     }
@@ -126,6 +127,13 @@ def init_launcher(namespace, default, launcher_conf, lc_cls, cp_cls, loop):
                                                 companion_conf['name'],
                                                 cp_cls, cp_conf))
     return lc, all_cp_confs
+
+async def print_mem(t, loop):
+    while True:
+        res = resource.getrusage(resource.RUSAGE_SELF)
+        print("ru_maxrss: {}, ru_ixrss: {}, ru_idrss: {}, ru_isrss: {}"
+              .format(res.ru_maxrss, res.ru_ixrss, res.ru_idrss, res.ru_isrss))
+        await asyncio.sleep(t, loop=loop)
 
 
 def _run(sd, sd_id, exposure):
@@ -152,6 +160,8 @@ def _run(sd, sd_id, exposure):
 
     loop.create_task(web.start_http_server(addr=ex_host, port=ex_port,
                                            loop=loop, service_discovery=agent))
+
+    loop.create_task(print_mem(2, loop))
     log.info('*****Running*****')
     loop.run_forever()
     log.info('*****Done*****')
