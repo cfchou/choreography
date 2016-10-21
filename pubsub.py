@@ -5,7 +5,7 @@ import copy
 
 from choreography.choreograph import CompanionPluginConf
 from choreography.cg_companion import SelfSubscriber
-from choreography.cg_launcher import OneShotLauncher
+from choreography.cg_launcher import OneShotLauncher2
 from choreography.choreograph import launcher_runner
 from choreography import cg_util
 import yaml
@@ -23,18 +23,18 @@ log = logging.getLogger(__name__)
 config = {
     'service_discovery': {
         #'host': '172.31.29.195',
-        'host': '192.168.1.36',
+        'host': '10.1.204.14',
         'port': '8500'
     },
     'prometheus_exposure': {
         #'host': '172.31.29.195',
-        'host': '192.168.1.36',
+        'host': '10.1.204.14',
         'port': '28080'
     },
     'default': {
         'launcher': {
             'broker': {
-                'uri': 'mqtt://127.0.0.1',
+                'uri': 'mqtts://127.0.0.1',
                 'cafile': 'server.pem',
                 #'capath':
                 #'cadata':
@@ -69,14 +69,19 @@ config = {
     },
     'launchers': [
         {
-            'plugin': 'OneShotLauncher',
+            'plugin': 'OneShotLauncher2',
             'name': 'launch_pub',
             'args': {
-                # after 'delay' secs, launch 'rate' number of clients within
-                # 'timeout' secs.
-                'delay': 5,    # delay to allow subscribers to go first
-                'rate': 20,      # number of publishers
-                'timeout': 10,
+                #after 'delay' secs, create and connect 'rate' number of clients
+                # using 'step' secs for 'num_steps' times.
+                #
+                # In each step, it may takes more then 'step' seconds. Moreover,
+                # 'auto_reconnect' will affect the time well.
+                'delay': 0,         # delay
+                'delay_max': 0,     # delay for random.uniform(delay, delay_max)
+                'rate': 4,
+                'step': 1,          # connect 'rate' clients using 'step' secs
+                'num_steps': 70,     # total = 'offset' + 'rate' * 'num_steps'
                 'client_id_prefix': 'cg_pub_'
             },
             'companions': [
@@ -85,7 +90,7 @@ config = {
                     'name': 'plugin_subpub_0001',
                     #'weight': 1
                     'args': {
-                        'msg_len': 128,
+                        'msg_len': 150,
                         #'msg': b'===== whatever ===== you ===== say =====',
 
                         # after 'delay' seconds, publish 'offset' msgs ASAP,
@@ -93,12 +98,12 @@ config = {
                         #
                         # total = 'offset' + 'rate' * 'num_steps'
                         'delay': 1,
-                        'delay_max': 3,
+                        'delay_max': 10,
                         'qos': 1,
                         'offset': 0,
-                        'step': 1,
+                        'step': 60,
                         'num_steps': -1,
-                        'rate': 2
+                        'rate': 1
                     }
                 }
             ]
@@ -128,7 +133,7 @@ def _run(sd, sd_id, exposure):
     loop = asyncio.get_event_loop()
     sub, sub_confs = init_launcher('test_run', config['default'],
                                    config['launchers'][0],
-                                   OneShotLauncher, SelfSubscriber, loop)
+                                   OneShotLauncher2, SelfSubscriber, loop)
     loop.create_task(launcher_runner(sub, companion_plugins=sub_confs))
 
     sd_host = config['service_discovery']['host'] if sd[0] is None else sd[0]

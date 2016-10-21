@@ -122,8 +122,8 @@ class CgClient(MQTTClient):
                     data_uc = data.decode('utf-8')
                     count += 1
                     self.__log.info('{} receives {} bytes at {}'.
-                                     format(self.client_id, data_len,
-                                            self._loop.time()))
+                                    format(self.client_id, data_len,
+                                           self._loop.time()))
                     prefix = data_uc[:min(48, data_len)]
                     self.__log.info('msg_{} = {}'.format(count, prefix))
                     await self.companion.received(msg)
@@ -352,8 +352,10 @@ async def _do_fire(uri: str,
     jobs = [run_client(i) for i in range(0, fire.rate)]
     if fire.duration > 0:
         jobs.append(asyncio.sleep(fire.duration))
-    timeout = None if fire.timeout == 0 else max(fire.duration, fire.timeout)
-    done, pending = await asyncio.wait(jobs, loop=loop, timeout=timeout)
+    # TODO: timeout is not needed as it may be conflicted with auto_reconnect
+    #timeout = None if fire.timeout == 0 else max(fire.duration, fire.timeout)
+    #done, pending = await asyncio.wait(jobs, loop=loop, timeout=timeout)
+    done, pending = await asyncio.wait(jobs, loop=loop, timeout=0)
     running = len([d for d in done if is_running_client(d)])
     _do_fire._log.debug('done:{}, running:{}'.format(len(done), running))
     return running, fire.rate - running

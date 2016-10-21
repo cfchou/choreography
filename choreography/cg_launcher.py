@@ -198,3 +198,78 @@ class OneShotLauncher(DelayMixin, Launcher):
         return LcFire(rate=self.rate, conf_queue=queue, duration=0,
                       timeout=self.timeout)
 
+
+@logged
+class OneShotLauncher2(DelayMixin, Launcher):
+    """
+    fire, terminate
+    after 'delay' secs, create and connect 'rate' number of clients using
+    'step' secs for 'num_steps' times.
+
+    In each step, it may takes more then 'step' seconds. Moreover,
+    'auto_reconnect' will affect the time well.
+    """
+    def __init__(self, namespace, plugin_name, name, config,
+                 loop: BaseEventLoop=None):
+        super().__init__(namespace, plugin_name, name, config, loop)
+        # parameters optional
+        self.rate = self.config.get('rate', 1)
+        self.step = self.config.get('step', 1)
+        self.num_steps = self.config.get('num_steps', 1)
+        self.delay = self.get_delay(self.config)
+        self.client_id_prefix = self.config.get('client_id_prefix')
+
+        if self.rate < 0 or self.step < 0 or self.num_steps < 0 or \
+           self.delay < 0:
+            raise CgLauncherException('Invalid configs')
+
+        # stateful
+        self.step_count = 0
+        self.step_start = 0
+        self.fu = None
+        self.fire_times = []
+        for _ in range(0, self.rate):
+            self.fire_times.append(random.uniform(0.0, self.step))
+        self.fire_times.sort()
+
+        self.__log.info('{} args: rate={}, step ={}, num_steps={}, delay={}'.
+                         format(self.name, self.rate, self.step, self.num_steps,
+                                self.delay))
+
+    async def ask(self, resp: LcResp=None) -> LcCmd:
+        if self.delay > 0:
+            self.__log.info('Delay for {}'.format(self.delay))
+            i = self.delay
+            self.delay = 0
+            return LcIdle(duration=i)
+
+        async def put_conf(q, maxsize):
+            for _ in range(0, maxsize):
+                if self.client_id_prefix is None:
+                    # autogen when client_id is None
+                    await q.put((gen_client_id(), self.config))
+                else:
+                    await q.put((gen_client_id(self.client_id_prefix),
+                                 self.config))
+
+        if self.fu is not None:
+            self.fu.cancel()
+        if self.step_count >= self.num_steps:
+            self.__log.info('Terminate {} steps all done'.
+                            format(self.num_steps))
+            return LcTerminate()
+
+        now = self.loop.time()
+        diff = self.step_start + self.step - now
+        if diff > 0:
+            self.__log.info('Idle for {}'.format(diff))
+            return LcIdle(duration=diff)
+
+        queue = asyncio.Queue(maxsize=self.rate, loop=self.loop)
+        self.fu = self.loop.create_task(put_conf(queue, self.rate))
+        self.step_count += 1
+        self.step_start = now
+        self.__log.info('LcFire {} at step: {}'.
+                        format(self.rate, self.step_count))
+        return LcFire(rate=self.rate, conf_queue=queue, duration=0)
+
