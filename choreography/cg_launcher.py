@@ -7,7 +7,8 @@ from choreography.cg_util import gen_client_id
 import asyncio
 from asyncio import BaseEventLoop
 import random
-
+import attr
+from transitions import Machine
 from autologging import logged
 
 
@@ -272,4 +273,10 @@ class OneShotLauncher2(DelayMixin, Launcher):
         self.__log.info('LcFire {} at step: {}'.
                         format(self.rate, self.step_count))
         return LcFire(rate=self.rate, conf_queue=queue, duration=0)
+
+
+@logged
+@attr.s
+class LinearModel(object):
+    states = ['created', 'delaying', 'step_running', 'step_idling', 'step_done']
 
