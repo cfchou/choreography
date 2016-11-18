@@ -31,3 +31,7 @@ class CgPubException(CgException):
 
 class CgSubException(CgException):
     pass
+
+
+class CgModelException(CgException):
+    pass

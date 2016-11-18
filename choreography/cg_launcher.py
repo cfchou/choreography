@@ -3,12 +3,11 @@
 import abc
 from typing import List, Union, NamedTuple
 from choreography.cg_exception import CgLauncherException
-from choreography.cg_util import gen_client_id
+from choreography.cg_util import gen_client_id, MonoIncModel
 import asyncio
 from asyncio import BaseEventLoop
 import random
 import attr
-from transitions import Machine
 from autologging import logged
 
 
@@ -275,8 +274,126 @@ class OneShotLauncher2(DelayMixin, Launcher):
         return LcFire(rate=self.rate, conf_queue=queue, duration=0)
 
 
+class MonoIncLauncher(Launcher):
+    @abc.abstractmethod
+    def run_step(self):
+        """
+        :return:
+        """
+
+    @abc.abstractmethod
+    def run_offset(self):
+        """
+        :return:
+        """
+
+    @abc.abstractmethod
+    def run_delay(self):
+        """
+        :return:
+        """
+
+    @abc.abstractmethod
+    def run_idle(self):
+        """
+        :return:
+        """
+
+    @abc.abstractmethod
+    def run_done(self):
+        """
+        :return:
+        """
+
+
+class MonoIncLauncherModel(MonoIncModel):
+    def __init__(self, launcher: MonoIncLauncher, rate=1, num_steps=-1, step=1,
+                 offset=0, delay=0, loop: BaseEventLoop = None):
+        super().__init__(rate, num_steps, step, offset, delay, loop)
+        self.launcher = launcher
+
+    def run_step(self):
+        self.launcher.run_step()
+
+    def run_offset(self):
+        self.launcher.run_offset()
+
+    def run_delay(self):
+        self.launcher.run_delay()
+
+    def run_idle(self):
+        self.launcher.run_idle()
+
+    def run_done(self):
+        self.launcher.run_done()
+
+
 @logged
-@attr.s
-class LinearModel(object):
-    states = ['created', 'delaying', 'step_running', 'step_idling', 'step_done']
+class OneShotLauncher3(DelayMixin, MonoIncLauncher):
+    """
+    fire, terminate
+    after 'delay' secs, create and connect 'rate' number of clients using
+    'step' secs for 'num_steps' times.
+
+    In each step, it may takes more then 'step' seconds. Moreover,
+    'auto_reconnect' will affect the time well.
+    """
+    def __init__(self, namespace, plugin_name, name, config,
+                 loop: BaseEventLoop=None):
+        try:
+            super().__init__(namespace, plugin_name, name, config, loop)
+            self.model = MonoIncLauncherModel(launcher=self,
+                                              rate=self.config.get('rate', 1),
+                                              num_steps=self.config.get('num_steps', 1),
+                                              step=self.config.get('step', 1),
+                                              delay=self.get_delay(self.config),
+                                              loop=loop)
+            self.client_id_prefix = self.config.get('client_id_prefix')
+            self.fu = None
+            self.__log.info('{} args: rate={}, step ={}, num_steps={}, delay={}'.
+                            format(self.name, self.model.rate, self.model.step,
+                                   self.model.num_steps, self.model.delay))
+        except Exception as e:
+            raise CgLauncherException('Invalid configs')
+
+
+    async def ask(self, resp: LcResp=None) -> LcCmd:
+        self.model.ask()
+
+        if self.delay > 0:
+            self.__log.info('Delay for {}'.format(self.delay))
+            i = self.delay
+            self.delay = 0
+            return LcIdle(duration=i)
+
+        async def put_conf(q, maxsize):
+            for _ in range(0, maxsize):
+                if self.client_id_prefix is None:
+                    # autogen when client_id is None
+                    await q.put((gen_client_id(), self.config))
+                else:
+                    await q.put((gen_client_id(self.client_id_prefix),
+                                 self.config))
+
+        if self.fu is not None:
+            self.fu.cancel()
+        if self.step_count >= self.num_steps:
+            self.__log.info('Terminate {} steps all done'.
+                            format(self.num_steps))
+            return LcTerminate()
+
+        now = self.loop.time()
+        diff = self.step_start + self.step - now
+        if diff > 0:
+            self.__log.info('Idle for {}'.format(diff))
+            return LcIdle(duration=diff)
+
+        queue = asyncio.Queue(maxsize=self.rate, loop=self.loop)
+        self.fu = self.loop.create_task(put_conf(queue, self.rate))
+        self.step_count += 1
+        self.step_start = now
+        self.__log.info('LcFire {} at step: {}'.
+                        format(self.rate, self.step_count))
+        return LcFire(rate=self.rate, conf_queue=queue, duration=0)
+
 

@@ -10,12 +10,13 @@ import uuid
 import asyncio
 from asyncio import BaseEventLoop
 from stevedore.named import NamedExtensionManager, ExtensionManager
-from choreography.cg_exception import CgException, CgLauncherException
+from choreography.cg_exception import CgException, CgModelException
 import collections
 import socket
 from consul.aio import Consul
 from consul import Check
 from autologging import logged
+from transitions import Machine
 
 
 def deep_get(nesting, default, *keys):
@@ -416,4 +417,169 @@ class SdConsul(object):
                 consul.close()
 
         return deregister
+
+
+class MonoIncModel(object):
+    """
+    A state machine that presents a monotonically increasing model.
+    total = rate * num_steps + offset
+    """
+    states = ['created', 'delaying', 'offset', 'step_running', 'step_idle',
+              'done']
+
+    def __init__(self, rate=1, num_steps=-1, step=1, offset=0, delay=0,
+                 loop: BaseEventLoop=None):
+        if rate < 0 or step < 0 or self.delay < 0:
+            raise CgModelException('Invalid configs')
+
+        self.rate = rate
+        self.num_steps = num_steps
+        self.steps_remained = num_steps
+        self.step = step
+        self.offset = offset
+        self.delay = delay
+        self.loop = asyncio.get_event_loop() if loop is None else loop
+
+        # internal
+        self.delay_start_t = 0
+        self.step_start_t = 0
+
+        self.machine = Machine(model=self, states=MonoIncModel.states,
+                               initial='created')
+        # =====================
+        # created -> delaying
+        self.machine.add_transition(trigger='ask', source='created',
+                                    dest='delaying',
+                                    conditions=['has_delay'],
+                                    after='run_delay')
+        # created -> offset
+        self.machine.add_transition(trigger='ask', source='created',
+                                    dest='offset',
+                                    conditions=['has_offset'],
+                                    unless=['has_delay'],
+                                    after='run_offset')
+        # created -> step_running
+        self.machine.add_transition(trigger='ask', source='created',
+                                    dest='step_running',
+                                    conditions=['has_steps'],
+                                    unless=['has_offset', 'has_delay'],
+                                    after='run_step')
+        # created -> done
+        self.machine.add_transition(trigger='ask', source='created',
+                                    dest='done',
+                                    unless=['has_offset', 'has_delay',
+                                            'has_steps'],
+                                    after='run_done')
+
+        # =====================
+        # delaying -> offset
+        self.machine.add_transition(trigger='ask', source='delaying',
+                                    dest='offset',
+                                    conditions=['is_delay_elapsed',
+                                                'has_offset'],
+                                    after='run_offset')
+
+        # delaying -> step_running
+        self.machine.add_transition(trigger='ask', source='delaying',
+                                    dest='step_running',
+                                    conditions=['is_delay_elapsed',
+                                                'has_steps'],
+                                    unless=['has_offset'],
+                                    after='run_step')
+        # delaying -> done
+        self.machine.add_transition(trigger='ask', source='delaying',
+                                    dest='done',
+                                    conditions=['is_delay_elapsed'],
+                                    unless=['has_offset', 'has_steps'],
+                                    after='run_done')
+        # =====================
+        # offset -> step_running
+        self.machine.add_transition(trigger='ask', source='offset',
+                                    dest='step_running',
+                                    conditions=['has_steps'],
+                                    after='run_step')
+        # offset -> done
+        self.machine.add_transition(trigger='ask', source='offset',
+                                    dest='done',
+                                    unless=['has_steps'],
+                                    after='run_done')
+        # =====================
+        # step_running -> step_idle
+        self.machine.add_transition(trigger='ask', source='step_running',
+                                    dest='step_idle',
+                                    conditions=['is_step_finished_early'],
+                                    after='run_idle')
+        # step_running -> step_running (explicitly transition to itself)
+        self.machine.add_transition(trigger='ask', source='step_running',
+                                    dest='step_running',
+                                    conditions=['has_steps'],
+                                    unless=['is_step_finished_early'],
+                                    after='run_step')
+        # step_running -> done
+        self.machine.add_transition(trigger='ask', source='step_running',
+                                    dest='done',
+                                    unless=['is_step_finished_early',
+                                            'has_steps'],
+                                    after='run_done')
+        # =====================
+        # step_idle -> step_running
+        self.machine.add_transition(trigger='ask', source='step_idle',
+                                    dest='step_running',
+                                    conditions=['has_steps'],
+                                    unless=['is_step_finished_early'],
+                                    after='run_step')
+        # step_idle -> done
+        self.machine.add_transition(trigger='ask', source='step_idle',
+                                    dest='done',
+                                    unless=['has_steps',
+                                            'is_step_finished_early'],
+                                    after='run_done')
+        # =====================
+        # done -> done (explicitly create a trivial transition)
+        self.machine.add_transition(trigger='ask', source='done',
+                                    dest='done',
+                                    after='run_done')
+
+    def on_enter_delaying(self):
+        self.delay_start_t = self.loop.time()
+
+    def on_enter_step_running(self):
+        self.step_start_t = self.loop.time()
+        self.steps_remained -= 1
+
+    def is_delay_elapsed(self):
+        now = self.loop.time()
+        return now >= self.delay_start_t + self.delay
+
+    def is_step_finished_early(self):
+        now = self.loop.time()
+        return self.step_start_t + self.step > now
+
+    def has_delay(self):
+        return self.delay > 0
+
+    def has_offset(self):
+        return self.offset > 0
+
+    def has_steps(self):
+        return self.steps_remained != 0
+
+    def current_step(self):
+        return self.num_steps - self.steps_remained
+
+    # ===== overrides ======
+    def run_delay(self):
+        pass
+
+    def run_offset(self):
+        pass
+
+    def run_step(self):
+        pass
+
+    def run_idle(self):
+        pass
+
+    def run_done(self):
+        pass
 
