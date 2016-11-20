@@ -395,20 +395,17 @@ async def launcher_runner(launcher: Launcher,
                 cmd_resp = LcResp(cmd_prev)
                 continue
             if isinstance(cmd, cg_launcher.LcTerminate):
-                launcher_runner._log.debug('terminate launcher {}'.format(launcher.name))
+                launcher_runner._log.debug('terminate launcher {}'.
+                                           format(launcher.name))
                 break
             if isinstance(cmd, cg_launcher.LcIdle):
                 launcher_runner._log.debug('idle launcher {}'.
                                            format(launcher.name))
-                if cmd.duration > 0:
+                if cmd.duration >= 0:
                     await asyncio.sleep(cmd.duration, loop=loop)
-                    cmd_resp = LcResp(cmd)
-                    cmd_prev = cmd
-                    continue
-                else:
-                    launcher_runner._log.debug('terminate launcher {}'.
-                                               format(launcher.name))
-                    break
+                cmd_resp = LcResp(cmd)
+                cmd_prev = cmd
+                continue
             # isinstance(cmd, cg_launcher.LcFire)
             before = loop.time()
             launcher_runner._log.debug('before:{}'.format(before))

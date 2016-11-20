@@ -35,3 +35,8 @@ class CgSubException(CgException):
 
 class CgModelException(CgException):
     pass
+
+
+class CgConfigException(CgException):
+    pass
+

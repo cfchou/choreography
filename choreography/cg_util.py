@@ -10,7 +10,8 @@ import uuid
 import asyncio
 from asyncio import BaseEventLoop
 from stevedore.named import NamedExtensionManager, ExtensionManager
-from choreography.cg_exception import CgException, CgModelException
+from choreography.cg_exception import CgException
+from choreography.cg_exception import CgModelException, CgConfigException
 import collections
 import socket
 from consul.aio import Consul
@@ -336,10 +337,19 @@ def gen_client_id(prefix='cg_cli_'):
     :return:
     """
     gen_id = prefix
-
     for i in range(7, 23):
         gen_id += chr(random.randint(0, 74) + 48)
     return gen_id
+
+
+def get_delay(config):
+    delay = config.get('delay', 0)
+    delay_max = config.get('delay_max', delay)
+    if delay_max >= delay >= 0:
+        return random.uniform(delay, delay_max)
+    else:
+        raise CgConfigException('delay={}, delay_max={}'.
+                                format(delay, delay_max))
 
 
 def lorem_ipsum(length: int=0) -> bytes:
@@ -419,6 +429,7 @@ class SdConsul(object):
         return deregister
 
 
+@logged
 class MonoIncModel(object):
     """
     A state machine that presents a monotonically increasing model.
@@ -429,12 +440,12 @@ class MonoIncModel(object):
 
     def __init__(self, rate=1, num_steps=-1, step=1, offset=0, delay=0,
                  loop: BaseEventLoop=None):
-        if rate < 0 or step < 0 or self.delay < 0:
+        if rate < 0 or step < 0 or delay < 0:
             raise CgModelException('Invalid configs')
 
         self.rate = rate
         self.num_steps = num_steps
-        self.steps_remained = num_steps
+        self.__steps_remained = num_steps
         self.step = step
         self.offset = offset
         self.delay = delay
@@ -545,7 +556,7 @@ class MonoIncModel(object):
 
     def on_enter_step_running(self):
         self.step_start_t = self.loop.time()
-        self.steps_remained -= 1
+        self.__steps_remained -= 1
 
     def is_delay_elapsed(self):
         now = self.loop.time()
@@ -562,10 +573,10 @@ class MonoIncModel(object):
         return self.offset > 0
 
     def has_steps(self):
-        return self.steps_remained != 0
+        return self.__steps_remained != 0
 
     def current_step(self):
-        return self.num_steps - self.steps_remained
+        return self.num_steps - self.__steps_remained
 
     # ===== overrides ======
     def run_delay(self):
@@ -582,4 +593,65 @@ class MonoIncModel(object):
 
     def run_done(self):
         pass
+
+
+class MonoIncResp(abc.ABC):
+    """
+    Implement this interface to react to state change.
+    """
+    @abc.abstractmethod
+    def run_step(self):
+        """
+        :return:
+        """
+
+    @abc.abstractmethod
+    def run_offset(self):
+        """
+        :return:
+        """
+
+    @abc.abstractmethod
+    def run_delay(self):
+        """
+        :return:
+        """
+
+    @abc.abstractmethod
+    def run_idle(self):
+        """
+        :return:
+        """
+
+    @abc.abstractmethod
+    def run_done(self):
+        """
+        :return:
+        """
+
+
+class MonoIncRespModel(MonoIncModel):
+    """
+    Execute implementation of MonoIncResp based on MonoIncModel
+    """
+    def __init__(self, responder: MonoIncResp, rate=1, num_steps=-1, step=1,
+                 offset=0, delay=0, loop: BaseEventLoop = None):
+        super().__init__(rate, num_steps, step, offset, delay, loop)
+        self.responder = responder
+
+    def run_delay(self):
+        self.responder.run_delay()
+
+    def run_offset(self):
+        self.responder.run_offset()
+
+    def run_step(self):
+        self.responder.run_step()
+
+    def run_idle(self):
+        self.responder.run_idle()
+
+    def run_done(self):
+        self.responder.run_done()
+
 

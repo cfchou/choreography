@@ -5,7 +5,7 @@ import copy
 
 from choreography.choreograph import CompanionPluginConf
 from choreography.cg_companion import SelfSubscriber
-from choreography.cg_launcher import OneShotLauncher2
+from choreography.cg_launcher import MonoIncLauncher
 from choreography.choreograph import launcher_runner
 from choreography import cg_util
 import yaml
@@ -24,12 +24,12 @@ log = logging.getLogger(__name__)
 config = {
     'service_discovery': {
         #'host': '172.31.29.195',
-        'host': '10.1.204.14',
+        'host': '192.168.1.36',
         'port': '8500'
     },
     'prometheus_exposure': {
         #'host': '172.31.29.195',
-        'host': '10.1.204.14',
+        'host': '192.168.1.36',
         'port': '28080'
     },
     'default': {
@@ -70,7 +70,7 @@ config = {
     },
     'launchers': [
         {
-            'plugin': 'OneShotLauncher2',
+            'plugin': 'MonoIncLauncher',
             'name': 'launch_pub',
             'args': {
                 #after 'delay' secs, create and connect 'rate' number of clients
@@ -79,7 +79,7 @@ config = {
                 # In each step, it may takes more then 'step' seconds. Moreover,
                 # 'auto_reconnect' will affect the time well.
                 'delay': 0,         # delay
-                'delay_max': 0,     # delay for random.uniform(delay, delay_max)
+                'delay_max': 10,     # delay for random.uniform(delay, delay_max)
                 'rate': 2,
                 'step': 1,          # connect 'rate' clients using 'step' secs
                 'num_steps': 2,     # total = 'offset' + 'rate' * 'num_steps'
@@ -141,7 +141,7 @@ def _run(sd, sd_id, exposure):
     loop = asyncio.get_event_loop()
     sub, sub_confs = init_launcher('test_run', config['default'],
                                    config['launchers'][0],
-                                   OneShotLauncher2, SelfSubscriber, loop)
+                                   MonoIncLauncher, SelfSubscriber, loop)
     loop.create_task(launcher_runner(sub, companion_plugins=sub_confs))
 
     sd_host = config['service_discovery']['host'] if sd[0] is None else sd[0]
