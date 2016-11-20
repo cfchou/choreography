@@ -104,8 +104,7 @@ class MonoIncLauncher(MonoIncResp, Launcher):
                             format(self.name, self.model.rate, self.model.step,
                                    self.model.num_steps, self.model.delay))
         except Exception as e:
-            self.__log.exception(e)
-            raise CgLauncherException('Invalid configs')
+            raise CgLauncherException('Invalid configs') from e
 
     # helpers
     def set_fire(self, count):
