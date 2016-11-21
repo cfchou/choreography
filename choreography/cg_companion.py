@@ -6,7 +6,7 @@ import pprint
 from hbmqtt.session import IncomingApplicationMessage
 from choreography.cg_exception import CgCompanionException
 from choreography.cg_util import lorem_ipsum, get_delay
-from choreography.cg_util import MonoIncResp, MonoIncRespModel
+from choreography.cg_util import StepResp, StepRespModel
 from typing import List, Tuple, Union, NamedTuple
 import random
 from autologging import logged
@@ -334,188 +334,14 @@ class OneShotSubscriber(Companion):
         return CpIdle(duration=self.duration)
 
 
-class DelayMixin(object):
-    """
-    """
-    def get_delay(self, config):
-        delay = config.get('delay', 0)
-        delay_max = config.get('delay_max', delay)
-        if delay_max >= delay >= 0:
-            return random.uniform(delay, delay_max)
-        else:
-            return 0
-
-
 from prometheus_client import Counter, Gauge, Summary, Histogram
 fly_hist = Histogram('cg_pubsub_fly_hist', 'pubsub fly time')
 
 
 @logged
-class SelfSubscriber(DelayMixin, Companion):
+class SelfPubSub(StepResp, Companion):
     """
-    SelfSubscriber, after 'delay'~'delay_max' secs, subscribes a topic,
-    then acts like a LinearPublisher to publish to the topic.
-
-    Given that:
-        'step' is the number of secs per step
-        'rate' is the number of publishes per 'step'
-        'num_steps' is the number of 'step's
-        total = offset + rate * num_steps
-
-    num_steps < 0 means infinite
-
-    Other configs:
-    if no 'topic', use 'client_id' as the topic
-    'msg_len' is ignored if 'msg' is presented.
-
-    """
-    def __init__(self, namespace, plugin_name, name, config,
-                 loop: BaseEventLoop = None):
-        super().__init__(namespace, plugin_name, name, config, loop)
-        # parameters required
-        self.topic = config.get('topic', name)
-
-        # parameters optional
-        self.msg_len = config.get('msg_len', 0)
-        self.msg = config.get('msg')    # ignore 'msg_len'
-        self.qos = config.get('qos', 0)
-        self.retain = config.get('retain', False)
-        self.delay = self.get_delay(config)
-
-        self.offset = config.get('offset', 0)
-        self.rate = config.get('rate', 1)
-        self.step = config.get('step', 1)
-        self.num_steps = config.get('num_steps', 1)
-        self.disconnect_when_done = config.get('disconnect_when_done', True)
-
-        if self.qos < 0 or self.qos > 2:
-            raise CgCompanionException('invalid qos {}'.format(self.qos))
-
-        # stateful
-        self.step_start = 0
-        self.step_count = 0
-        self.rate_count = 0
-        self.total = 0
-        self.subscribed = False
-
-        # short name for log
-        self.sn = 'cg_pub_' + self.name[-16:]
-
-        def _debug(s):
-            self.__log.debug('{} {}'.format(self.sn, s))
-
-        def _info(s):
-            self.__log.info('{} {}'.format(self.sn, s))
-
-        def _warn(s):
-            self.__log.warn('{} {}'.format(self.sn, s))
-
-        def _exception(s):
-            self.__log.warn('{} {}'.format(self.sn, s))
-
-        self._debug = _debug
-        self._info = _info
-        self._warn = _warn
-        self._exception = _exception
-
-        self._info('offset({}) + rate({}) * num_steps({}); step({})'.
-                   format(self.offset, self.rate, self.num_steps, self.step))
-
-    def _companion_done(self):
-        self._debug('step done {}, {}'.format(self.step_count, self.sn))
-        if self.disconnect_when_done:
-            return CpDisconnect()
-        else:
-            return CpTerminate()
-
-    def msg_marked(self):
-        self.total += 1
-        mark = bytes('{:05} {} {}:'.
-                     format(self.total, self.name, self.loop.time()).
-                     encode('utf-8'))
-        if self.msg is None:
-            if self.msg_len > len(mark):
-                return mark + lorem_ipsum(self.msg_len - len(mark))
-            else:
-                return mark
-        else:
-            return self.msg
-
-    async def ask(self, resp: CpResp = None) -> CpCmd:
-        if self.delay > 0:
-            self._info('{}: step done {}'.format(self.sn, self.step_count))
-            i = self.delay
-            self.delay = 0
-            return CpIdle(duration=i)
-
-        if not self.subscribed:
-            # TODO: check sub successful
-            self.subscribed = True
-            return CpSubscribe([(self.topic, self.qos)])
-
-        # publish all 'offset' number of messages
-        while self.offset > 0:
-            self._debug('{}: offset {}'.format(self.sn, self.offset))
-            self.offset -= 1
-            return CpPublish(topic=self.topic, msg=self.msg_marked(),
-                             qos=self.qos, retain=self.retain)
-
-        # self.step_count is finished steps
-        if self.rate <= 0 or self.step_count >= self.num_steps >= 0:
-            return self._companion_done()
-
-        now = self.loop.time()
-        if self.rate_count >= self.rate:
-            # the rate reached
-            self._info('{}: step {} done, fired {}'.
-                       format(self.sn, self.step_count, self.rate_count))
-            this_step = self.step_count
-            self.step_count += 1
-            self.rate_count = 0
-
-            if self.step_start + self.step > now:
-                idle = self.step_start + self.step - now
-                self._info('{}: step {} idle {}'.format(self.sn, this_step,
-                                                        idle))
-                return CpIdle(duration=idle)
-            else:
-                self._info('{}: step {} late, takes {} secs'.
-                           format(self.sn, this_step, now - self.step_start))
-                if self.step_count >= self.num_steps >= 0:
-                    return self._companion_done()
-
-        if self.rate_count == 0:
-            self.step_start = now
-            self._info('{}: step {} starts at {}'.
-                       format(self.sn, self.step_count, now))
-
-        self.rate_count += 1
-        self._debug('{}: step {} ongoing, firing {}'.
-                    format(self.sn, self.step_count, self.rate_count))
-        return CpPublish(topic=self.topic, msg=self.msg_marked(),
-                         qos=self.qos, retain=self.retain)
-
-    async def received(self, msg: IncomingApplicationMessage):
-        try:
-            # see self.msg_marked()
-            # mark = bytes('{:05} {} {}:'....)
-            x = msg.publish_packet.data.decode('utf-8')
-            i = x.find(' ')
-            j = x.find(' ', i+1)
-            k = x.find(':', j+1)
-            diff = self.loop.time() - float(x[j+1:k])
-            self._debug('fly: {}'.format(diff))
-            fly_hist.observe(diff)
-        except Exception as e:
-            self._exception(e)
-            # swallow
-
-
-
-@logged
-class SelfSubscriber2(MonoIncResp, Companion):
-    """
-    SelfSubscriber, after 'delay'~'delay_max' secs, subscribes a topic,
+    SelfPubSub, after 'delay'~'delay_max' secs, subscribes a topic,
     then acts like a LinearPublisher to publish to the topic.
 
     Given that:
@@ -535,12 +361,14 @@ class SelfSubscriber2(MonoIncResp, Companion):
                  loop: BaseEventLoop = None):
         try:
             super().__init__(namespace, plugin_name, name, config, loop)
-            self.model = MonoIncRespModel(responder=self,
-                                          rate=self.config.get('rate', 1),
-                                          num_steps=self.config.get('num_steps', 1),
-                                          step=self.config.get('step', 1),
-                                          delay=get_delay(config),
-                                          loop=loop)
+            self.model = StepRespModel(responder=self,
+                                       num_steps=self.config.get('num_steps', 1),
+                                       step=self.config.get('step', 1),
+                                       delay=get_delay(config),
+                                       loop=loop)
+            self.rate = self.config.get('rate', 1)
+            if self.rate < 0:
+                raise CgCompanionException('Invalid rate={}'.format(self.rate))
             # use 'client_id' as the default topic
             self.topic = config.get('topic', name)
             self.msg_len = config.get('msg_len', 0)
@@ -549,18 +377,22 @@ class SelfSubscriber2(MonoIncResp, Companion):
             if self.qos < 0 or self.qos > 2:
                 raise CgCompanionException('invalid qos {}'.format(self.qos))
             self.retain = config.get('retain', False)
-            #self.disconnect_when_done = config.get('disconnect_when_done', True)
             self.auto_disconnect = config.get('auto_disconnect', True)
 
             self.subscribed = False
-            self.offset_countdown = 0
-            self.cp_cmd = None
 
+            # hack to skip model transition
+            self.offset_countdown = 0
+            self.rate_countdown = 0
+
+            self.total = 0
+            self.cp_cmd = None
             # short name for logging
             self.sn = 'cg_pub_' + self.name[-16:]
+
             self.__log.info('{}: offset({}) + rate({}) * num_steps({}); step({})'.
-                            format(self.sn, self.offset, self.rate, self.num_steps,
-                                   self.step))
+                            format(self.sn, self.model.offset, self.rate,
+                                   self.model.num_steps, self.model.step))
 
         except CgCompanionException as e:
             raise e
@@ -568,7 +400,6 @@ class SelfSubscriber2(MonoIncResp, Companion):
             raise CgCompanionException('Invalid configs') from e
 
     def msg_marked(self):
-        self.total += 1
         mark = bytes('{:05} {} {}:'.
                      format(self.total, self.name, self.loop.time()).
                      encode('utf-8'))
@@ -586,14 +417,17 @@ class SelfSubscriber2(MonoIncResp, Companion):
 
     def run_offset(self):
         self.__log.debug('{} fire offset {}'.format(self.sn, self.model.offset))
-        self.offset_countdown = self.model.offset
+        assert self.model.offset > 0
+        self.offset_countdown = self.model.offset - 1
+        self.total += 1
         self.cp_cmd = CpPublish(topic=self.topic, msg=self.msg_marked(),
                                 qos=self.qos, retain=self.retain)
 
     def run_step(self):
         self.__log.debug('{} fire at step {}'.
-                         format(self.sn, self.model.rate,
-                                self.model.current_step()))
+                         format(self.sn, self.rate, self.model.current_step()))
+        self.rate_countdown = self.rate - 1
+        self.total += 1
         self.cp_cmd = CpPublish(topic=self.topic, msg=self.msg_marked(),
                                 qos=self.qos, retain=self.retain)
 
@@ -614,8 +448,20 @@ class SelfSubscriber2(MonoIncResp, Companion):
         if not self.subscribed:
             self.subscribed = True
             return CpSubscribe([(self.topic, self.qos)])
-        if self.offset_countdown > 1:
+
+        # Here skipping model.ask() for a few times(xxx_countdown) to stay
+        # in the same transition. This hack is ugly due to the fact that
+        # StepModel is not general enough. However, I want to keep it simple.
+        if self.offset_countdown > 0:
             self.offset_countdown -= 1
+            self.total += 1
+            self.cp_cmd = CpPublish(topic=self.topic, msg=self.msg_marked(),
+                                    qos=self.qos, retain=self.retain)
+        elif self.rate_countdown > 0:
+            self.rate_countdown -= 1
+            self.total += 1
+            self.cp_cmd = CpPublish(topic=self.topic, msg=self.msg_marked(),
+                                    qos=self.qos, retain=self.retain)
         else:
             self.model.ask()
         return self.cp_cmd
@@ -629,10 +475,10 @@ class SelfSubscriber2(MonoIncResp, Companion):
             j = x.find(' ', i+1)
             k = x.find(':', j+1)
             diff = self.loop.time() - float(x[j+1:k])
-            self._debug('fly: {}'.format(diff))
+            self.__log.debug('{} fly: {}'.format(self.sn, diff))
             fly_hist.observe(diff)
         except Exception as e:
-            self._exception(e)
+            self.__log.exception('{} {}'.format(self.sn, e))
             # swallow
 
 

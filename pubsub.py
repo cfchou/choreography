@@ -4,7 +4,7 @@ import asyncio
 import copy
 
 from choreography.choreograph import CompanionPluginConf
-from choreography.cg_companion import SelfSubscriber
+from choreography.cg_companion import SelfPubSub
 from choreography.cg_launcher import MonoIncLauncher
 from choreography.choreograph import launcher_runner
 from choreography import cg_util
@@ -15,6 +15,7 @@ from prometheus_client import Counter, Gauge, Summary, Histogram
 from prometheus_async.aio import count_exceptions, time, track_inprogress
 
 import resource
+import tracemalloc
 
 import logging.config
 import logging
@@ -24,12 +25,14 @@ log = logging.getLogger(__name__)
 config = {
     'service_discovery': {
         #'host': '172.31.29.195',
-        'host': '192.168.1.36',
+        #'host': '192.168.1.36',
+        'host': '10.1.204.14',
         'port': '8500'
     },
     'prometheus_exposure': {
         #'host': '172.31.29.195',
-        'host': '192.168.1.36',
+        #'host': '192.168.1.36',
+        'host': '10.1.204.14',
         'port': '28080'
     },
     'default': {
@@ -87,7 +90,7 @@ config = {
             },
             'companions': [
                 {
-                    'plugin': 'SelfSubscriber',
+                    'plugin': 'SelfPubSub',
                     'name': 'plugin_subpub_0001',
                     #'weight': 1
                     'args': {
@@ -128,6 +131,33 @@ def init_launcher(namespace, default, launcher_conf, lc_cls, cp_cls, loop):
                                                 cp_cls, cp_conf))
     return lc, all_cp_confs
 
+snapshot1 = None
+snapshot2 = None
+rss_prev = 0
+async def log_mem(t, loop):
+    global snapshot1, snapshot2, rss_prev
+    while True:
+        res = resource.getrusage(resource.RUSAGE_SELF)
+        log.debug("ru_maxrss: {}".format(res.ru_maxrss))
+
+        if snapshot1 is None:
+            rss_prev = res.ru_maxrss
+            snapshot1 = tracemalloc.take_snapshot()
+            snapshot2 = snapshot1
+        else:
+            if rss_prev != res.ru_maxrss:
+                # compare when rss is increasing
+                rss_prev = res.ru_maxrss
+                snapshot1 = snapshot2
+                snapshot2 = tracemalloc.take_snapshot()
+                top_stats = snapshot2.compare_to(snapshot1, 'lineno')
+                #top_stats = snapshot2.statistics('lineno')
+                log.debug("[ Top 20 ] ============================= ")
+                for stat in top_stats[:10]:
+                    log.debug(stat)
+                log.debug("============================= ")
+        await asyncio.sleep(t, loop=loop)
+
 async def print_mem(t, loop):
     while True:
         res = resource.getrusage(resource.RUSAGE_SELF)
@@ -141,7 +171,7 @@ def _run(sd, sd_id, exposure):
     loop = asyncio.get_event_loop()
     sub, sub_confs = init_launcher('test_run', config['default'],
                                    config['launchers'][0],
-                                   MonoIncLauncher, SelfSubscriber, loop)
+                                   MonoIncLauncher, SelfPubSub, loop)
     loop.create_task(launcher_runner(sub, companion_plugins=sub_confs))
 
     sd_host = config['service_discovery']['host'] if sd[0] is None else sd[0]
@@ -161,7 +191,8 @@ def _run(sd, sd_id, exposure):
     loop.create_task(web.start_http_server(addr=ex_host, port=ex_port,
                                            loop=loop, service_discovery=agent))
 
-    loop.create_task(print_mem(2, loop))
+    tracemalloc.start()
+    loop.create_task(log_mem(2, loop))
     log.info('*****Running*****')
     loop.run_forever()
     log.info('*****Done*****')

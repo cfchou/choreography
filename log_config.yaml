@@ -20,17 +20,18 @@ formatters:
 
 loggers:
   choreography:
-    handlers: [console, file]
-    level: DEBUG
+    #handlers: [console, file]
+    handlers: [file]
+    level: INFO
   choreography.launcher_plugins:
-    handlers: [console, file]
-    level: DEBUG
+    handlers: [file]
+    level: INFO
   asyncio:
-    handlers: [console, file]
-    level: DEBUG
+    handlers: [file]
+    level: WARN
   hbmqtt:
-    handlers: [console, file]
-    level: DEBUG
+    handlers: [file]
+    level: INFO
   __main__:
     handlers: [console, file]
     level: DEBUG

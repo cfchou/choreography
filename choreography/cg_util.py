@@ -430,20 +430,19 @@ class SdConsul(object):
 
 
 @logged
-class MonoIncModel(object):
+class StepModel(object):
     """
     A state machine that presents a monotonically increasing model.
     total = rate * num_steps + offset
     """
-    states = ['created', 'delaying', 'offset', 'step_running', 'step_idle',
+    states = ['created', 'delaying', 'offsetting', 'stepping', 'idling',
               'done']
 
-    def __init__(self, rate=1, num_steps=-1, step=1, offset=0, delay=0,
+    def __init__(self, num_steps=-1, step=1, offset=0, delay=0,
                  loop: BaseEventLoop=None):
-        if rate < 0 or step < 0 or delay < 0:
+        if step < 0 or delay < 0:
             raise CgModelException('Invalid configs')
 
-        self.rate = rate
         self.num_steps = num_steps
         self.__steps_remained = num_steps
         self.step = step
@@ -455,7 +454,7 @@ class MonoIncModel(object):
         self.delay_start_t = 0
         self.step_start_t = 0
 
-        self.machine = Machine(model=self, states=MonoIncModel.states,
+        self.machine = Machine(model=self, states=StepModel.states,
                                initial='created')
         # =====================
         # created -> delaying
@@ -463,15 +462,15 @@ class MonoIncModel(object):
                                     dest='delaying',
                                     conditions=['has_delay'],
                                     after='run_delay')
-        # created -> offset
+        # created -> offsetting
         self.machine.add_transition(trigger='ask', source='created',
-                                    dest='offset',
+                                    dest='offsetting',
                                     conditions=['has_offset'],
                                     unless=['has_delay'],
                                     after='run_offset')
-        # created -> step_running
+        # created -> stepping
         self.machine.add_transition(trigger='ask', source='created',
-                                    dest='step_running',
+                                    dest='stepping',
                                     conditions=['has_steps'],
                                     unless=['has_offset', 'has_delay'],
                                     after='run_step')
@@ -483,16 +482,16 @@ class MonoIncModel(object):
                                     after='run_done')
 
         # =====================
-        # delaying -> offset
+        # delaying -> offsetting
         self.machine.add_transition(trigger='ask', source='delaying',
-                                    dest='offset',
+                                    dest='offsetting',
                                     conditions=['is_delay_elapsed',
                                                 'has_offset'],
                                     after='run_offset')
 
-        # delaying -> step_running
+        # delaying -> stepping
         self.machine.add_transition(trigger='ask', source='delaying',
-                                    dest='step_running',
+                                    dest='stepping',
                                     conditions=['is_delay_elapsed',
                                                 'has_steps'],
                                     unless=['has_offset'],
@@ -504,43 +503,43 @@ class MonoIncModel(object):
                                     unless=['has_offset', 'has_steps'],
                                     after='run_done')
         # =====================
-        # offset -> step_running
-        self.machine.add_transition(trigger='ask', source='offset',
-                                    dest='step_running',
+        # offsetting -> stepping
+        self.machine.add_transition(trigger='ask', source='offsetting',
+                                    dest='stepping',
                                     conditions=['has_steps'],
                                     after='run_step')
-        # offset -> done
-        self.machine.add_transition(trigger='ask', source='offset',
+        # offsetting -> done
+        self.machine.add_transition(trigger='ask', source='offsetting',
                                     dest='done',
                                     unless=['has_steps'],
                                     after='run_done')
         # =====================
-        # step_running -> step_idle
-        self.machine.add_transition(trigger='ask', source='step_running',
-                                    dest='step_idle',
+        # stepping -> idling
+        self.machine.add_transition(trigger='ask', source='stepping',
+                                    dest='idling',
                                     conditions=['is_step_finished_early'],
                                     after='run_idle')
-        # step_running -> step_running (explicitly transition to itself)
-        self.machine.add_transition(trigger='ask', source='step_running',
-                                    dest='step_running',
+        # stepping -> stepping (explicitly transition to itself)
+        self.machine.add_transition(trigger='ask', source='stepping',
+                                    dest='stepping',
                                     conditions=['has_steps'],
                                     unless=['is_step_finished_early'],
                                     after='run_step')
-        # step_running -> done
-        self.machine.add_transition(trigger='ask', source='step_running',
+        # stepping -> done
+        self.machine.add_transition(trigger='ask', source='stepping',
                                     dest='done',
                                     unless=['is_step_finished_early',
                                             'has_steps'],
                                     after='run_done')
         # =====================
-        # step_idle -> step_running
-        self.machine.add_transition(trigger='ask', source='step_idle',
-                                    dest='step_running',
+        # idling -> stepping
+        self.machine.add_transition(trigger='ask', source='idling',
+                                    dest='stepping',
                                     conditions=['has_steps'],
                                     unless=['is_step_finished_early'],
                                     after='run_step')
-        # step_idle -> done
-        self.machine.add_transition(trigger='ask', source='step_idle',
+        # idling -> done
+        self.machine.add_transition(trigger='ask', source='idling',
                                     dest='done',
                                     unless=['has_steps',
                                             'is_step_finished_early'],
@@ -554,7 +553,7 @@ class MonoIncModel(object):
     def on_enter_delaying(self):
         self.delay_start_t = self.loop.time()
 
-    def on_enter_step_running(self):
+    def on_enter_stepping(self):
         self.step_start_t = self.loop.time()
         self.__steps_remained -= 1
 
@@ -595,9 +594,10 @@ class MonoIncModel(object):
         pass
 
 
-class MonoIncResp(abc.ABC):
+
+class StepResp(abc.ABC):
     """
-    Implement this interface to react to state change.
+    Implement this interface to react whenever a transition happens.
     """
     @abc.abstractmethod
     def run_step(self):
@@ -630,13 +630,13 @@ class MonoIncResp(abc.ABC):
         """
 
 
-class MonoIncRespModel(MonoIncModel):
+class StepRespModel(StepModel):
     """
-    Execute implementation of MonoIncResp based on MonoIncModel
+    Execute implementation of StepResp based on StepModel
     """
-    def __init__(self, responder: MonoIncResp, rate=1, num_steps=-1, step=1,
+    def __init__(self, responder: StepResp, num_steps=-1, step=1,
                  offset=0, delay=0, loop: BaseEventLoop = None):
-        super().__init__(rate, num_steps, step, offset, delay, loop)
+        super().__init__(num_steps, step, offset, delay, loop)
         self.responder = responder
 
     def run_delay(self):

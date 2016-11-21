@@ -4,7 +4,7 @@ import abc
 from typing import List, Union, NamedTuple
 from choreography.cg_exception import CgLauncherException
 from choreography.cg_util import gen_client_id, get_delay
-from choreography.cg_util import MonoIncRespModel, MonoIncResp
+from choreography.cg_util import StepRespModel, StepResp
 import asyncio
 from asyncio import BaseEventLoop
 import random
@@ -78,7 +78,7 @@ class Launcher(abc.ABC):
 
 
 @logged
-class MonoIncLauncher(MonoIncResp, Launcher):
+class MonoIncLauncher(StepResp, Launcher):
     """
     fire, terminate
     after 'delay' secs, create and connect 'rate' number of clients using
@@ -91,18 +91,23 @@ class MonoIncLauncher(MonoIncResp, Launcher):
                  loop: BaseEventLoop=None):
         try:
             super().__init__(namespace, plugin_name, name, config, loop)
-            self.model = MonoIncRespModel(responder=self,
-                                          rate=self.config.get('rate', 1),
-                                          num_steps=self.config.get('num_steps', 1),
-                                          step=self.config.get('step', 1),
-                                          delay=get_delay(config),
-                                          loop=loop)
+            self.model = StepRespModel(responder=self,
+                                       num_steps=self.config.get('num_steps', 1),
+                                       step=self.config.get('step', 1),
+                                       delay=get_delay(config),
+                                       loop=loop)
+            self.rate = self.config.get('rate', 1)
+            if self.rate < 0:
+                raise CgLauncherException('Invalid rate={}'.format(self.rate))
+
             self.client_id_prefix = self.config.get('client_id_prefix')
             self.fu = None
             self.lc_cmd = None
             self.__log.info('{} args: rate={}, step ={}, num_steps={}, delay={}'.
-                            format(self.name, self.model.rate, self.model.step,
+                            format(self.name, self.rate, self.model.step,
                                    self.model.num_steps, self.model.delay))
+        except CgLauncherException as e:
+            raise e
         except Exception as e:
             raise CgLauncherException('Invalid configs') from e
 
@@ -121,7 +126,7 @@ class MonoIncLauncher(MonoIncResp, Launcher):
         self.fu = self.loop.create_task(put_conf(queue, count))
         self.lc_cmd = LcFire(rate=count, conf_queue=queue, duration=0)
 
-    # MonoIncResp implementation
+    # StepResp implementation
     def run_delay(self):
         self.__log.debug('delay for {}'.format(self.model.delay))
         self.lc_cmd = LcIdle(duration=self.model.delay)
@@ -133,11 +138,11 @@ class MonoIncLauncher(MonoIncResp, Launcher):
         self.set_fire(self.model.offset)
 
     def run_step(self):
-        self.__log.debug('fire {} at step {}'.format(self.model.rate,
+        self.__log.debug('fire {} at step {}'.format(self.rate,
                                                      self.model.current_step()))
         if self.fu is not None:
             self.fu.cancel()
-        self.set_fire(self.model.rate)
+        self.set_fire(self.rate)
 
     def run_idle(self):
         now = self.loop.time()
