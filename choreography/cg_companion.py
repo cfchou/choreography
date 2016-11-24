@@ -8,6 +8,7 @@ from choreography.cg_exception import CgCompanionException
 from choreography.cg_util import lorem_ipsum, get_delay
 from choreography.cg_util import StepResp, StepRespModel
 from typing import List, Tuple, Union, NamedTuple
+from transitions import Machine
 import random
 from autologging import logged
 
@@ -334,6 +335,113 @@ class OneShotSubscriber(Companion):
         return CpIdle(duration=self.duration)
 
 
+
+@logged
+class SimpleSub(Companion):
+    states = ['created', 'delaying', 'subscribing', 'receiving', 'done']
+
+    """
+    SimpleSub, after 'delay' secs, subscribes a number of topics and
+    listens for them for 'duration' secs.
+
+    duration == 0 means infinite
+    """
+    def __init__(self, namespace, plugin_name, name, config,
+                 loop: BaseEventLoop = None):
+        try:
+            super().__init__(namespace, plugin_name, name, config, loop)
+            self.topics = []
+            topics = config.get('topics')
+            if not topics:
+                topics = [{
+                    'topic': config['topic'],
+                    'qos': config.get('qos', 0)
+                }]
+
+            for x in topics:
+                topic = x.get('topic')
+                qos = x.get('qos')
+                if not topic or qos < 0 or qos > 2:
+                    raise CgCompanionException('invalid topic, qos: {}, {}'.
+                                               format(topic, qos))
+                self.topics.append((topic, qos))
+
+            # parameters optional
+            self.delay = get_delay(config)
+
+            # criteria to terminate
+            self.duration = config.get('duration', -1)
+            # TODO: terminate if some number of msgs received
+
+            # only in use if duration > 0
+            self.auto_disconnect = config.get('auto_disconnect', True)
+            self.__log.debug('{} args: delay={}, duration={}, topics={}'.
+                             format(self.name, self.delay, self.duration,
+                                    self.topics))
+            # stateful
+            self.machine = Machine(model=self, states=SimpleSub.states,
+                                   initial='created')
+            self.machine.add_ordered_transitions(['created', 'delaying',
+                                                  'subscribing', 'receiving'],
+                                                 loop=False)
+            self.machine.add_transition(trigger='next_state',
+                                        source='receiving',
+                                        dest='receiving',
+                                        unless='is_done',
+                                        after='keep_receiving')
+            self.machine.add_transition(trigger='next_state',
+                                        source='receiving',
+                                        dest='done',
+                                        condition='is_done')
+
+            self.cp_cmd = None
+            self.duration_start_t = 0
+
+        except CgCompanionException as e:
+            raise e
+        except Exception as e:
+            raise CgCompanionException from e
+
+    def on_enter_delaying(self):
+        if self.delay > 0:
+            self.cp_cmd = CpIdle(duration=self.delay)
+        else:
+            self.machine.next()
+
+    def on_enter_subscribing(self):
+        self.cp_cmd = CpSubscribe(self.topics)
+
+    def on_exit_subscribing(self):
+        self.duration_start_t = self.loop.time()
+
+    def on_enter_receiving(self):
+        if self.duration >= 0:
+            now = self.loop.time()
+            self.cp_cmd = CpIdle(max(
+                now - self.duration_start_t - self.duration, 0))
+        else:
+            self.machine.next_state()
+
+    def on_enter_done(self):
+        if self.auto_disconnect:
+            self.cp_cmd = CpDisconnect()
+        else:
+            self.cp_cmd = CpTerminate()
+
+    def is_done(self):
+        if self.duration >= 0:
+            now = self.loop.time()
+            if now - self.duration_start_t - self.duration > 0:
+                return True
+        if self.received_count >= self.expect >= 0:
+            return True
+        return False
+
+    async def ask(self, resp: CpResp = None) -> CpCmd:
+        self.machine.next_state()
+        return self.cp_cmd
+
+
 from prometheus_client import Counter, Gauge, Summary, Histogram
 fly_hist = Histogram('cg_pubsub_fly_hist', 'pubsub fly time')
 
@@ -377,6 +485,7 @@ class SelfPubSub(StepResp, Companion):
             if self.qos < 0 or self.qos > 2:
                 raise CgCompanionException('invalid qos {}'.format(self.qos))
             self.retain = config.get('retain', False)
+            # only in use when num_steps >= 0
             self.auto_disconnect = config.get('auto_disconnect', True)
 
             self.subscribed = False
@@ -438,6 +547,7 @@ class SelfPubSub(StepResp, Companion):
         self.cp_cmd = CpIdle(duration=diff)
 
     def run_done(self):
+        assert self.model.num_steps >= 0
         self.__log.debug('{} step done {}'.format(self.sn, self.step_count))
         if self.auto_disconnect:
             self.cp_cmd = CpDisconnect()

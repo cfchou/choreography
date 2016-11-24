@@ -213,6 +213,7 @@ class CgClient(MQTTClient):
             cmd_resp = None
             while True:
                 self.__log.debug("ask companion: {}".format(self.client_id))
+                # TODO: wait receive(deliver_message) in the same loop here
                 done, _ = await asyncio.wait([_asking(companion.ask(cmd_resp))])
                 cmd = cg_util.future_successful_result(done.pop())
                 if cmd is None:
@@ -225,7 +226,7 @@ class CgClient(MQTTClient):
                     break
                 if isinstance(cmd, cg_companion.CpIdle):
                     self.__log.debug('idle {}'.format(self.client_id))
-                    if cmd.duration > 0:
+                    if cmd.duration >= 0:
                         await asyncio.sleep(cmd.duration, loop=self._loop)
                         cmd_resp = CpResp(cmd, succeeded=True)
                         cmd_prev = cmd
@@ -363,6 +364,160 @@ async def _do_fire(uri: str,
 
 @logged
 async def launcher_runner(launcher: Launcher,
+                          companion_plugins: List[CompanionPluginConf]):
+    """
+    TODO: an Launcher instance should only be run by launcher_runner only once
+    might need to embed a state in Launcher to ensures that launcher.ask is
+    re-entrant free.
+
+    :param launcher:
+    :param companion_plugins:
+    :return:
+    """
+    @cg_util.convert_coro_exception(Exception, CgLauncherException)
+    async def _asking(coro):
+        return await coro
+    loop = launcher.loop
+    cmd_prev = None
+    cmd_resp = None
+    conf = launcher.config['broker']
+    uri = conf['uri']
+    cleansession = conf.get('cleansession')
+    cafile = conf.get('cafile')
+    capath = conf.get('capath')
+    cadata = conf.get('cadata')
+    try:
+        while True:
+            launcher_runner._log.debug("ask launcher {}".format(launcher.name))
+            done, _ = await asyncio.wait([_asking(launcher.ask(cmd_resp))])
+            cmd = cg_util.future_successful_result(done.pop())
+            if cmd is None:
+                launcher_runner._log.warn('can\'t retrieve cmd')
+                cmd_resp = LcResp(cmd_prev)
+                continue
+            if isinstance(cmd, cg_launcher.LcTerminate):
+                launcher_runner._log.debug('terminate launcher {}'.
+                                           format(launcher.name))
+                break
+            if isinstance(cmd, cg_launcher.LcIdle):
+                launcher_runner._log.debug('idle launcher {}'.
+                                           format(launcher.name))
+                if cmd.duration >= 0:
+                    await asyncio.sleep(cmd.duration, loop=loop)
+                cmd_resp = LcResp(cmd)
+                cmd_prev = cmd
+                continue
+            # isinstance(cmd, cg_launcher.LcFire)
+            before = loop.time()
+            launcher_runner._log.debug('before:{}'.format(before))
+            launcher_runner._log.debug('uri={}, cleansession={}, cafile={}, '
+                                       'capath={}, cadata={}'.
+                                       format(uri, cleansession, cafile, capath,
+                                              cadata))
+            succeeded, failed = await _do_fire(uri,
+                                               companion_plugins, cmd, loop,
+                                               cleansession=cleansession,
+                                               cafile=cafile,
+                                               capath=capath,
+                                               cadata=cadata)
+            after = loop.time()
+            launcher_runner._log.debug('after:{}'.format(after))
+            cmd_resp = LcResp(cmd, succeeded, failed)
+            cmd_prev = cmd
+    except Exception as e:
+        launcher_runner._log.exception(e)
+        raise CgException from e
+
+
+import multiprocessing
+from concurrent.futures import ProcessPoolExecutor
+import functools
+import copy
+
+
+@logged
+def cg_run_launcher_mp(context, launcher_conf):
+    # note context and launcher_conf are isolated for each process because COW
+    # in systems that supports fork()
+    lc_mgr = cg_util.load_plugin_manager(
+        namespace='choreography.launcher_plugins',
+        names=[launcher_conf['plugin']])
+    cp_mgr = cg_util.load_plugin_manager(
+        namespace='choreography.companion_plugins',
+        names=[launcher_conf['companion']['plugin']])
+
+
+    # each thread has its own loop
+    policy = asyncio.get_event_loop_policy()
+    loop = policy.new_event_loop()
+    policy.set_event_loop(loop)
+    loop.run_until_complete(cg_run_launcher(context, launcher_conf, lc_mgr, cp_mgr))
+
+
+
+@logged
+async def cg_run_launchers(config, parallel=False):
+    loop = asyncio.get_event_loop()
+
+    confs = cg_util.read_launcher_config(config)
+    tasks = []
+    if not parallel:
+        lc_mgr = cg_util.load_plugin_manager(
+            namespace='choreography.launcher_plugins',
+            names=[conf['plugin'] for conf in confs])
+        cp_mgr = cg_util.load_plugin_manager(
+            namespace='choreography.companion_plugins',
+            names=[conf['companion']['plugin'] for conf in confs])
+
+    for conf in confs:
+        context = cg_util.new_context(config)
+        if parallel:
+            tasks.append(loop.run_in_executor(None, cg_run_launcher_mp,
+                                              context, conf))
+        else:
+            tasks.append(cg_run_launcher(context, conf, lc_mgr, cp_mgr))
+    await asyncio.wait(tasks)
+
+
+
+
+
+@logged
+def cg_run(config, func=None):
+    custom_loop = config.get('custom_loop', '')
+    if custom_loop == 'uvloop':
+        import uvloop
+        policy = uvloop.EventLoopPolicy()
+        asyncio.set_event_loop_policy(policy=policy)
+
+    # num_processes in addition to the main thread
+    num_processes = config.get('num_processes', multiprocessing.cpu_count())
+    loop = asyncio.get_event_loop()
+    if num_processes > 0:
+        executor = ProcessPoolExecutor(num_processes)
+        loop.set_default_executor(executor)
+
+    if func is not None:
+        func(config, loop)
+
+    loop.run_until_complete(asyncio.ensure_future(
+        cg_run_launchers(config, parallel=num_processes > 0)))
+
+
+
+
+@logged
+async def cg_run_launcher(context, launcher_conf, launcher_manager,
+                          companion_manager):
+    cg_run_launcher._log.debug('')
+    await asyncio.sleep(3)
+
+
+
+
+
+@logged
+async def launcher_runner2(launcher: Launcher,
                           companion_plugins: List[CompanionPluginConf]):
     """
     TODO: an Launcher instance should only be run by launcher_runner only once

@@ -9,7 +9,8 @@ import random
 import uuid
 import asyncio
 from asyncio import BaseEventLoop
-from stevedore.named import NamedExtensionManager, ExtensionManager
+from stevedore import NamedExtensionManager, ExtensionManager
+from stevedore import DriverManager
 from choreography.cg_exception import CgException
 from choreography.cg_exception import CgModelException, CgConfigException
 import collections
@@ -147,6 +148,44 @@ def find_plugin(mgr: ExtensionManager, plugin_name):
         raise CgException('number of plugin {}: {}'.
                           format(plugin_name, len(ps)))
     return ps[0]
+
+
+@logged
+def load_plugin_manager(namespace, names=None):
+    def on_missing_plugin(name):
+        raise CgException('missing plugin {}.{}'.format(namespace, name))
+    try:
+        if names is None:
+            return ExtensionManager(namespace=namespace)
+        else:
+            return NamedExtensionManager(namespace=namespace,
+                                         on_missing_entrypoints_callback=on_missing_plugin,
+                                         names=names)
+    except CgException as e:
+        raise e
+    except BaseException as e:
+        load_plugin_manager._log.exception(e)
+        raise CgException from e
+
+
+@logged
+def load_plugin_manager2(namespace, names=None):
+    def on_missing_plugin(name):
+        raise CgException('missing plugin {}.{}'.format(namespace, name))
+    try:
+        if names is None:
+            return ExtensionManager(namespace=namespace)
+        else:
+            return NamedExtensionManager(namespace=namespace,
+                                         on_missing_entrypoints_callback=on_missing_plugin,
+                                         names=names)
+    except CgException as e:
+        raise e
+    except BaseException as e:
+        load_plugin_manager._log.exception(e)
+        raise CgException from e
+
+
 
 
 @logged
@@ -327,6 +366,41 @@ def update(target, src):
                 target[k] = v
         else:
             target[k] = v
+
+
+from collections import Mapping
+
+class FixedDict(Mapping):
+    def __init__(self, dictionary):
+        self.dictionary = dictionary
+
+    def __getitem__(self, key):
+        return self.dictionary[key]
+
+    def __iter__(self):
+        return iter(self.dictionary)
+
+    def __len__(self):
+        return len(self.dictionary)
+
+
+def new_context(config):
+    config_copy = copy.deepcopy(config)
+    config_copy.pop('default', None)
+    config_copy.pop('launchers', None)
+    return config_copy
+
+
+def read_launcher_config(config):
+    default_conf = config['default']['launcher']
+    confs = config['launchers']
+    all_lc_confs = []
+    for conf in confs:
+        # isolating config
+        lc_conf = copy.deepcopy(default_conf)
+        update(lc_conf, conf)
+        all_lc_confs.append(lc_conf)
+    return all_lc_confs
 
 
 def gen_client_id(prefix='cg_cli_'):
@@ -635,7 +709,7 @@ class StepRespModel(StepModel):
     Execute implementation of StepResp based on StepModel
     """
     def __init__(self, responder: StepResp, num_steps=-1, step=1,
-                 offset=0, delay=0, loop: BaseEventLoop = None):
+                 offset=0, delay=0, loop: BaseEventLoop=None):
         super().__init__(num_steps, step, offset, delay, loop)
         self.responder = responder
 

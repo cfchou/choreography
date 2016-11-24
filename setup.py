@@ -42,10 +42,11 @@ setup(
         #'console_scripts': ['choreograph=choreography.scripts.choreograph:main'],
         'choreography.launcher_plugins': [
             #'LinearLauncher = choreography.launcher_plugins.linear:LinearLauncher'
-            'OneShotLauncher = choreography.cg_launcher:OneShotLauncher'
+            'TestLauncher = choreography.launcher_plugins.trivial:TestLauncher'
         ],
         'choreography.companion_plugins': [
-            'IdleCompanion = choreography.cg_companion:IdleCompanion'
+            #'IdleCompanion = choreography.cg_companion:IdleCompanion'
+            'TestCompanion = choreography.companion_plugins.trivial:TestCompanion'
         ]
     }
 )

@@ -83,9 +83,11 @@ config = {
                 # 'auto_reconnect' will affect the time well.
                 'delay': 0,         # delay
                 'delay_max': 10,     # delay for random.uniform(delay, delay_max)
+                'offset': 0,
                 'rate': 2,
                 'step': 1,          # connect 'rate' clients using 'step' secs
                 'num_steps': 2,     # total = 'offset' + 'rate' * 'num_steps'
+
                 'client_id_prefix': 'cg_pub_'
             },
             'companions': [
@@ -103,11 +105,12 @@ config = {
                         # total = 'offset' + 'rate' * 'num_steps'
                         'delay': 1,
                         'delay_max': 10,
-                        'qos': 1,
                         'offset': 0,
+                        'rate': 1,
                         'step': 2,
                         'num_steps': -1,
-                        'rate': 1
+
+                        'qos': 1,
                     }
                 }
             ]
