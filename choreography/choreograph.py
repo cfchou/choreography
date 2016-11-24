@@ -456,12 +456,14 @@ def cg_run_launcher_mp(context, launcher_conf):
 
 
 @logged
-async def cg_run_launchers(config, parallel=False):
+async def cg_run_launchers(config, func=None, parallel=False):
     loop = asyncio.get_event_loop()
 
     confs = cg_util.read_launcher_config(config)
     tasks = []
-    if not parallel:
+    if parallel:
+
+    else:
         lc_mgr = cg_util.load_plugin_manager(
             namespace='choreography.launcher_plugins',
             names=[conf['plugin'] for conf in confs])
@@ -480,8 +482,6 @@ async def cg_run_launchers(config, parallel=False):
 
 
 
-
-
 @logged
 def cg_run(config, func=None):
     custom_loop = config.get('custom_loop', '')
@@ -489,19 +489,23 @@ def cg_run(config, func=None):
         import uvloop
         policy = uvloop.EventLoopPolicy()
         asyncio.set_event_loop_policy(policy=policy)
+    else:
+        cg_run._log.warn('only uvloop is supported')
 
-    # num_processes in addition to the main thread
-    num_processes = config.get('num_processes', multiprocessing.cpu_count())
+    confs = cg_util.read_launcher_config(config)
+    parallel = config.get('multiprocessing', False)
+    if parallel and len(confs) > 1:
+
+    else:
+        parallel = False
+
+
     loop = asyncio.get_event_loop()
-    if num_processes > 0:
         executor = ProcessPoolExecutor(num_processes)
         loop.set_default_executor(executor)
 
-    if func is not None:
-        func(config, loop)
-
     loop.run_until_complete(asyncio.ensure_future(
-        cg_run_launchers(config, parallel=num_processes > 0)))
+        cg_run_launchers(config, func, parallel=config.get('multiprocessing', False))))
 
 
 
