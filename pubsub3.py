@@ -21,6 +21,7 @@ log = logging.getLogger(__name__)
 
 config = {
     'service_discovery': {
+        'service_id': 'runner_001', # should be unique
         #'host': '172.31.29.195',
         #'host': '192.168.1.36',
         'host': '10.1.204.14',
@@ -32,122 +33,78 @@ config = {
         'host': '10.1.204.14',
         'port': '28080'
     },
-    'num_processes': 3,
     'custom_loop': 'uvloop',
-    'default': {
-        'launcher': {
-            'broker': {
-                'uri': 'mqtt://127.0.0.1',
-                'cafile': 'server.pem',
-                #'capath':
-                #'cadata':
-                'cleansession': True
-            },
-            'certfile': 'client.crt',
-            'keyfile': 'client.key',
-            'check_hostname': False,
-            'keep_alive': 60,
-            'ping_delay': 1,
-            'default_qos': 0,
-            'default_retain': False,
-            'auto_reconnect': True,
-            #'reconnect_max_interval': 11,
-            'reconnect_retries': 3,
-            # 'certfile:
-            # 'keyfile:
-            'check_hostname': False,
-            #'will': {
-            #    'topic': 'WILL_TOPIC',
-            #    'message': b'WILL_MESSAGE',
-            #    'qos': 1,
-            #    'retain': False
-            #},
-            # will be updated by launchers[i]['args']
-            'rate': 1,
-            'timeout': 1,
-            'companion': {
-                # will be updated by launchers[i]['companions'][j]['args']
-            }
+    'broker': {
+        'uri': 'mqtt://127.0.0.1',
+        'cafile': 'server.pem',
+        #'capath':
+        #'cadata':
+    },
+    'client': {
+        'cleansession': True
+        'certfile': 'client.crt',
+        'keyfile': 'client.key',
+        'check_hostname': False,
+        'keep_alive': 60,
+        'ping_delay': 1,
+        'default_qos': 0,
+        'default_retain': False,
+        'auto_reconnect': True,
+        #'reconnect_max_interval': 11,
+        'reconnect_retries': 3,
+        # 'certfile:
+        # 'keyfile:
+        'check_hostname': False,
+        #'will': {
+        #    'topic': 'WILL_TOPIC',
+        #    'message': b'WILL_MESSAGE',
+        #    'qos': 1,
+        #    'retain': False
+        #},
+        # will be updated by launchers[i]['args']
+        'rate': 1,
+        'timeout': 1,
+        'companion': {
+            # will be updated by launchers[i]['companions'][j]['args']
         }
     },
-    'launchers': [
-        {
-            'plugin': 'TestLauncher',
-            'name': 'launch_pub',
-            'args': {
-                #after 'delay' secs, create and connect 'rate' number of clients
-                # using 'step' secs for 'num_steps' times.
-                #
-                # In each step, it may takes more then 'step' seconds. Moreover,
-                # 'auto_reconnect' will affect the time well.
-                'delay': 0,         # delay
-                'delay_max': 10,     # delay for random.uniform(delay, delay_max)
-                'offset': 0,
-                'rate': 2,
-                'step': 1,          # connect 'rate' clients using 'step' secs
-                'num_steps': 2,     # total = 'offset' + 'rate' * 'num_steps'
-                'client_id_prefix': 'cg_pub_'
-            },
-            'companion': {
-                'plugin': 'TestCompanion',
-                'name': 'plugin_subpub_0001',
-                'args': {
-                    'msg_len': 150,
-                    #'msg': b'===== whatever ===== you ===== say =====',
+    'launcher': {
+        'plugin': 'TestLauncher',
+        'config': {
+            #after 'delay' secs, create and connect 'rate' number of clients
+            # using 'step' secs for 'num_steps' times.
+            #
+            # In each step, it may takes more then 'step' seconds. Moreover,
+            # 'auto_reconnect' will affect the time well.
+            'delay': 0,         # delay
+            'delay_max': 10,     # delay for random.uniform(delay, delay_max)
+            'offset': 0,
+            'rate': 2,
+            'step': 1,          # connect 'rate' clients using 'step' secs
+            'num_steps': 2,     # total = 'offset' + 'rate' * 'num_steps'
+            'client_id_prefix': 'cg_pub_'
+        },
+    },
+    # TODO: client_id_formatter
+    'companion': {
+        'plugin': 'TestCompanion',
+        'config': {
+            'msg_len': 150,
+            #'msg': b'===== whatever ===== you ===== say =====',
 
-                    # after 'delay' seconds, publish 'offset' msgs ASAP,
-                    # then for every 'step' secs, publish 'rate' clients.
-                    #
-                    # total = 'offset' + 'rate' * 'num_steps'
-                    'delay': 1,
-                    'delay_max': 10,
-                    'offset': 0,
-                    'rate': 1,
-                    'step': 2,
-                    'num_steps': -1,
-                    'qos': 1,
-                }
-            }
-        }, {
-            'plugin': 'TestLauncher',
-            'name': 'launch_pub2',
-            'args': {
-                #after 'delay' secs, create and connect 'rate' number of clients
-                # using 'step' secs for 'num_steps' times.
-                #
-                # In each step, it may takes more then 'step' seconds. Moreover,
-                # 'auto_reconnect' will affect the time well.
-                'delay': 0,         # delay
-                'delay_max': 10,     # delay for random.uniform(delay, delay_max)
-                'offset': 0,
-                'rate': 2,
-                'step': 1,          # connect 'rate' clients using 'step' secs
-                'num_steps': 2,     # total = 'offset' + 'rate' * 'num_steps'
-                'client_id_prefix': 'cg_pub_'
-            },
-            'companion': {
-                'plugin': 'TestCompanion',
-                'name': 'plugin_subpub_0002',
-                'args': {
-                    'msg_len': 150,
-                    #'msg': b'===== whatever ===== you ===== say =====',
-
-                    # after 'delay' seconds, publish 'offset' msgs ASAP,
-                    # then for every 'step' secs, publish 'rate' clients.
-                    #
-                    # total = 'offset' + 'rate' * 'num_steps'
-                    'delay': 1,
-                    'delay_max': 10,
-                    'offset': 0,
-                    'rate': 1,
-                    'step': 2,
-                    'num_steps': -1,
-                    'qos': 1,
-                }
-            }
-
+            # after 'delay' seconds, publish 'offset' msgs ASAP,
+            # then for every 'step' secs, publish 'rate' clients.
+            #
+            # total = 'offset' + 'rate' * 'num_steps'
+            'delay': 1,
+            'delay_max': 10,
+            'offset': 0,
+            'rate': 1,
+            'step': 2,
+            'num_steps': -1,
+            'qos': 1,
         }
-    ]
+    }
 }
 
 

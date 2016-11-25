@@ -6,17 +6,24 @@ from hbmqtt.client import mqtt_connected
 from hbmqtt.session import IncomingApplicationMessage
 from choreography import cg_launcher
 from choreography.cg_launcher import Launcher, LcResp
+from choreography.cg_launcher import LcFire, LcTerminate, LcIdle
 from choreography import cg_companion
 from choreography.cg_companion import Companion, CpResp
 from choreography import cg_util
 from choreography.cg_util import CompanionPluginConf, RunnerContext
 from choreography.cg_exception import *
 from choreography.cg_metrics import *
+from prometheus_async.aio import web
+from stevedore import NamedExtensionManager, DriverManager
 import random
 from typing import List
 import asyncio
 from asyncio import BaseEventLoop
 from prometheus_async.aio import count_exceptions, time, track_inprogress
+from uuid import uuid1
+import attr
+from attr import validators
+import pprint
 
 from autologging import logged
 
@@ -322,6 +329,95 @@ def _do_client_run(uri: str,
 
 
 @logged
+def create_client_task(uri: str,
+                       companion_conf: CompanionPluginConf2,
+                       fire: cg_launcher.LcFire,
+                       loop: BaseEventLoop,
+                       cleansession: bool=None,
+                       cafile: str=None,
+                       capath: str=None,
+                       cadata: str=None) -> asyncio.Task:
+
+    @logged
+    async def connect():
+        client_id, conf = await fire.conf_queue.get()
+        cc = CgClient(client_id=client_id, config=conf, loop=loop)
+        connect._log.debug('CgClient {} await connect'.format(cc.client_id))
+        await cc.connect(uri=uri, cleansession=cleansession, cafile=cafile,
+                         capath=capath, cadata=cadata)
+        connect._log.debug('CgClient {} connect awaited'.format(cc.client_id))
+        return cc
+
+    @logged
+    def connect_cb(_fu: asyncio.Future):
+        cc = cg_util.future_successful_result(_fu)
+        if cc is None:
+            return
+        if not cc.is_connected():
+            connect_cb._log.info('connect is not connected: {}'.format(cc))
+            return
+        if cp_conf is None:
+            connect_cb._log.info('skip running because no companion plugs')
+            return
+        # TODO: exception is dropped in callback?
+        cp = cp_conf.new_instance(loop, name=cc.client_id)
+        connect_cb._log.debug('use companion {} to run'.format(cp.name))
+        # run asynchorously
+        loop.create_task(cc.run(cp))
+
+    task = loop.create_task(connect())
+    task.add_done_callback(connect_cb)
+    return task
+
+@logged
+async def _do_fire2(uri: str,
+                   companion_conf: CompanionPluginConf2,
+                   fire: cg_launcher.LcFire,
+                   loop: BaseEventLoop,
+                   cleansession: bool=None,
+                   cafile: str=None,
+                   capath: str=None,
+                   cadata: str=None):
+    try:
+        log = _do_fire2._log
+        jobs = [run_client(i) for i in range(0, fire.rate)]
+        if fire.duration > 0:
+            jobs.append(asyncio.sleep(fire.duration))
+    except Exception as e:
+        pass
+
+    def is_running_client(_task: asyncio.Task):
+        cc = cg_util.future_successful_result(_task)
+        if cc is None:
+            # asyncio.sleep yields None
+            return False
+        cc = _task.result()
+        if not isinstance(cc, CgClient):
+            return False
+        return cc.is_connected()
+
+    pick_func = _pick_plugin_conf_func(companion_plugins)
+
+    def run_client(_i):
+        p = pick_func(_i + 1)
+        return _do_client_run(uri, p, fire, loop, cleansession, cafile, capath,
+                              cadata)
+
+    _do_fire._log.debug('at {} for {} secs'.format(loop.time(),
+                                                   fire.duration))
+    jobs = [run_client(i) for i in range(0, fire.rate)]
+    if fire.duration > 0:
+        jobs.append(asyncio.sleep(fire.duration))
+    # TODO: timeout is not needed as it may be conflicted with auto_reconnect
+    #timeout = None if fire.timeout == 0 else max(fire.duration, fire.timeout)
+    #done, pending = await asyncio.wait(jobs, loop=loop, timeout=timeout)
+    done, pending = await asyncio.wait(jobs, loop=loop, timeout=0)
+    running = len([d for d in done if is_running_client(d)])
+    _do_fire._log.debug('done:{}, running:{}'.format(len(done), running))
+    return running, fire.rate - running
+
+
+@logged
 async def _do_fire(uri: str,
                    companion_plugins: List[CompanionPluginConf],
                    fire: cg_launcher.LcFire,
@@ -429,57 +525,19 @@ async def launcher_runner(launcher: Launcher,
         raise CgException from e
 
 
-import multiprocessing
-from concurrent.futures import ProcessPoolExecutor
-import functools
-import copy
+@attr.s(frozen=True)
+class CgContext(object):
+    name = attr.ib()
+    broker_conf = attr.ib()
+    client_conf = attr.ib()
+    loop = attr.ib(validators.instance_of(asyncio.BaseEventLoop))
 
 
-@logged
-def cg_run_launcher_mp(context, launcher_conf):
-    # note context and launcher_conf are isolated for each process because COW
-    # in systems that supports fork()
-    lc_mgr = cg_util.load_plugin_manager(
-        namespace='choreography.launcher_plugins',
-        names=[launcher_conf['plugin']])
-    cp_mgr = cg_util.load_plugin_manager(
-        namespace='choreography.companion_plugins',
-        names=[launcher_conf['companion']['plugin']])
-
-
-    # each thread has its own loop
-    policy = asyncio.get_event_loop_policy()
-    loop = policy.new_event_loop()
-    policy.set_event_loop(loop)
-    loop.run_until_complete(cg_run_launcher(context, launcher_conf, lc_mgr, cp_mgr))
-
-
-
-@logged
-async def cg_run_launchers(config, func=None, parallel=False):
-    loop = asyncio.get_event_loop()
-
-    confs = cg_util.read_launcher_config(config)
-    tasks = []
-    if parallel:
-
-    else:
-        lc_mgr = cg_util.load_plugin_manager(
-            namespace='choreography.launcher_plugins',
-            names=[conf['plugin'] for conf in confs])
-        cp_mgr = cg_util.load_plugin_manager(
-            namespace='choreography.companion_plugins',
-            names=[conf['companion']['plugin'] for conf in confs])
-
-    for conf in confs:
-        context = cg_util.new_context(config)
-        if parallel:
-            tasks.append(loop.run_in_executor(None, cg_run_launcher_mp,
-                                              context, conf))
-        else:
-            tasks.append(cg_run_launcher(context, conf, lc_mgr, cp_mgr))
-    await asyncio.wait(tasks)
-
+@attr.s
+class CompanionPluginConf2(object):
+    # TODO: validator for cls
+    cls = attr.ib()
+    conf = attr.ib()
 
 
 @logged
@@ -489,35 +547,111 @@ def cg_run(config, func=None):
         import uvloop
         policy = uvloop.EventLoopPolicy()
         asyncio.set_event_loop_policy(policy=policy)
-    else:
-        cg_run._log.warn('only uvloop is supported')
-
-    confs = cg_util.read_launcher_config(config)
-    parallel = config.get('multiprocessing', False)
-    if parallel and len(confs) > 1:
-
-    else:
-        parallel = False
-
 
     loop = asyncio.get_event_loop()
-        executor = ProcessPoolExecutor(num_processes)
-        loop.set_default_executor(executor)
 
-    loop.run_until_complete(asyncio.ensure_future(
-        cg_run_launchers(config, func, parallel=config.get('multiprocessing', False))))
+    # service discovery
+    sd_id = config['service_discovery'].get('sd_id', uuid1())
+    sd_host = config['service_discovery']['host']
+    sd_port = config['service_discovery']['port']
+    cg_run._log.info('*****Service discovery service {}@{}:{}*****'.
+                     format(sd_id, sd_host, sd_port))
 
+    agent = cg_util.SdConsul(name='cg_metrics', service_id=sd_id, host=sd_host,
+                             port=sd_port)
+    # metrics exposure
+    ex_host = config['prometheus_exposure']['host']
+    ex_port = config['prometheus_exposure']['port']
+    cg_run._log.info('*****Metrics exposed at {}:{}*****'.
+                     format(ex_host, ex_port))
+    loop.create_task(web.start_http_server(addr=ex_host, port=ex_port,
+                                           loop=loop, service_discovery=agent))
+    # user specified tasks
+    func(loop)
+
+    # load companion
+    companion_conf = CompanionPluginConf2(
+        cls=DriverManager(namespace='choreography.companion_plugins',
+                          name=config['companion']['plugin'],
+                          invoke_on_load=False).driver(),
+        conf=config['companion'].get('config', dict()))
+    # create context
+    context = CgContext(name=sd_id, broker_conf=config['broker'],
+                        client_conf=config['client'], loop=loop)
+
+    # load and create launcher
+    launcher = DriverManager(namespace='choreography.launcher_plugins',
+                             name=config['launcher']['plugin'],
+                             invoke_on_load=True,
+                             invoke_kwds= {
+                                 'context': context,
+                                 'companion_conf': companion_conf,
+                                 **config['launcher'].get('config', dict())
+                             })
+    loop.run_until_complete(asyncio.ensure_future(cg_launcher_run(context,
+                                                                  launcher)))
+
+class LcCmdRunner(object):
+    @staticmethod
+    async def run_terminate(context, cmd: LcTerminate, loop=None):
+        return LcResp(cmd)
+    @staticmethod
+    async def run_idle(context, cmd: LcIdle, loop=None):
+        if cmd.duration >= 0:
+            await asyncio.sleep(cmd.duration, loop=loop)
+        return LcResp(cmd)
+    @staticmethod
+    async def run_fire(context, cmd: LcFire, loop=None):
+        succeeded, failed = 1, 1
+        return LcResp(cmd, succeeded=succeeded, failed=failed)
 
 
 
 @logged
-async def cg_run_launcher(context, launcher_conf, launcher_manager,
-                          companion_manager):
-    cg_run_launcher._log.debug('')
-    await asyncio.sleep(3)
+async def cg_launcher_run(context: CgContext, launcher: Launcher, cmd_runner):
+    try:
+        log = cg_launcher_run._log
+        loop = context.loop
 
+        broker_conf = context.broker_conf
+        log.debug(broker_conf)
 
+        #uri = broker_conf['uri']
+        #cleansession = broker_conf.get('cleansession')
+        #cafile = broker_conf.get('cafile')
+        #capath = broker_conf.get('capath')
+        #cadata = broker_conf.get('cadata')
 
+        cmd_resp, cmd_prev = None, None
+        while True:
+            cmd = await asyncio.wait_for(launcher.ask(cmd_prev))
+            if isinstance(cmd, cg_launcher.LcTerminate):
+                log.debug('terminate launcher {}'. format(launcher.name))
+                cmd_resp = await cmd_runner.run_terminate(context, cmd)
+                cmd_prev = cmd
+                break
+            if isinstance(cmd, cg_launcher.LcIdle):
+                log.debug('idle launcher {}'.format(launcher.name))
+                cmd_resp = await cmd_runner.run_idle(context, cmd)
+                cmd_prev = cmd
+                continue
+            if isinstance(cmd, cg_launcher.LcFire):
+                cmd_resp = await cmd_runner.run_fire(context, cmd)
+                cmd_prev = cmd
+                #succeeded, failed = await _do_fire2(uri,
+                #                                   companion_plugins, cmd, loop,
+                #                                   cleansession=cleansession,
+                #                                   cafile=cafile,
+                #                                   capath=capath,
+                #                                   cadata=cadata)
+                #cmd_resp, cmd_prev = LcResp(cmd, succeeded, failed), cmd
+                continue
+            raise CgException('unsupported command {}'.format(cmd))
+    except CgException as e:
+        raise e
+    except Exception as e:
+        log.exception(e)
+        raise CgException from e
 
 
 @logged
