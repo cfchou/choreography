@@ -5,14 +5,14 @@ from hbmqtt.errors import HBMQTTException
 from hbmqtt.client import mqtt_connected
 from hbmqtt.session import IncomingApplicationMessage
 from choreography import cg_launcher
-from choreography.cg_launcher import Launcher, LcResp
-from choreography.cg_launcher import LcFire, LcTerminate, LcIdle
+from choreography.cg_launcher import LauncherRunnerDefault
 from choreography import cg_companion
 from choreography.cg_companion import Companion, CpResp
 from choreography import cg_util
 from choreography.cg_util import CompanionPluginConf, RunnerContext
 from choreography.cg_exception import *
 from choreography.cg_metrics import *
+from choreography.cg_context import CgContext, CgMetrics
 from prometheus_async.aio import web
 from stevedore import NamedExtensionManager, DriverManager
 import random
@@ -23,6 +23,9 @@ from prometheus_async.aio import count_exceptions, time, track_inprogress
 from uuid import uuid1
 import attr
 from attr import validators
+import abc
+import functools
+import itertools
 import pprint
 
 from autologging import logged
@@ -78,6 +81,9 @@ class CgClient(MQTTClient):
         # avoid unnecessary __do_receive.
         self.companion = None
         self.recv = None
+
+    def get_loop(self):
+        return self._loop
 
     def is_connected(self):
         return self._connected_state.is_set()
@@ -257,481 +263,102 @@ class CgClient(MQTTClient):
                 self.__log.debug('won\'t companion.ask but keep receiving')
 
 
-def _pick_plugin_conf_func(cps):
-    """
-    Pick a CompanionPluginConf. It either goes randomly or follows the weights
-    if all weights are presented.
-    :param cps:
-    :return:
-    """
-    if len(cps) <= 0:
-        return lambda _: None
-    weights = [cp.weight for cp in cps]
-    ws = sum([1 for w in weights if w is not None])
-    if ws == 0:
-        # no weights at all
-        return lambda _: cps[random.randrange(0, len(cps))]
-    if ws != len(cps):
-        raise CgException('all or none weights')
-    # all weights are presented
-    cd = cg_util.to_cd(weights)
-    return lambda i: cps[cg_util.cdf_from_cd(cd, i)]
-
-
-# TODO: this should be refactored into two part
-# It creates a task to client.connect asynchronously, when connected, create a
-# task to client.run asynchronously.
-# This means two things:
-# 1. Upper coro that chooses to wait the client.connect can cancel it but won't
-#    be able to cancel client.run.
-# 2. Conversely, exceptions leaked from client.run will not propagate to the
-#    upper coro and will go directly to the asyncio event loop.
 @logged
-def _do_client_run(uri: str,
-                cp_conf: CompanionPluginConf,
-                fire: cg_launcher.LcFire,
-                loop: BaseEventLoop,
-                cleansession: bool=None,
-                cafile: str=None,
-                capath: str=None,
-                cadata: str=None) -> asyncio.Task:
-
-    @logged
-    async def connect():
-        client_id, conf = await fire.conf_queue.get()
-        cc = CgClient(client_id=client_id, config=conf, loop=loop)
-        connect._log.debug('CgClient {} await connect'.format(cc.client_id))
-        await cc.connect(uri=uri, cleansession=cleansession, cafile=cafile,
-                         capath=capath, cadata=cadata)
-        connect._log.debug('CgClient {} connect awaited'.format(cc.client_id))
-        return cc
-
-    @logged
-    def connect_cb(_fu: asyncio.Future):
-        cc = cg_util.future_successful_result(_fu)
-        if cc is None:
-            return
-        if not cc.is_connected():
-            connect_cb._log.info('connect is not connected: {}'.format(cc))
-            return
-        if cp_conf is None:
-            connect_cb._log.info('skip running because no companion plugs')
-            return
-        # TODO: exception is dropped in callback?
-        cp = cp_conf.new_instance(loop, name=cc.client_id)
-        connect_cb._log.debug('use companion {} to run'.format(cp.name))
-        # run asynchorously
-        loop.create_task(cc.run(cp))
-
-    task = loop.create_task(connect())
-    task.add_done_callback(connect_cb)
-    return task
-
-
-@logged
-def create_client_task(uri: str,
-                       companion_conf: CompanionPluginConf2,
-                       fire: cg_launcher.LcFire,
-                       loop: BaseEventLoop,
-                       cleansession: bool=None,
-                       cafile: str=None,
-                       capath: str=None,
-                       cadata: str=None) -> asyncio.Task:
-
-    @logged
-    async def connect():
-        client_id, conf = await fire.conf_queue.get()
-        cc = CgClient(client_id=client_id, config=conf, loop=loop)
-        connect._log.debug('CgClient {} await connect'.format(cc.client_id))
-        await cc.connect(uri=uri, cleansession=cleansession, cafile=cafile,
-                         capath=capath, cadata=cadata)
-        connect._log.debug('CgClient {} connect awaited'.format(cc.client_id))
-        return cc
-
-    @logged
-    def connect_cb(_fu: asyncio.Future):
-        cc = cg_util.future_successful_result(_fu)
-        if cc is None:
-            return
-        if not cc.is_connected():
-            connect_cb._log.info('connect is not connected: {}'.format(cc))
-            return
-        if cp_conf is None:
-            connect_cb._log.info('skip running because no companion plugs')
-            return
-        # TODO: exception is dropped in callback?
-        cp = cp_conf.new_instance(loop, name=cc.client_id)
-        connect_cb._log.debug('use companion {} to run'.format(cp.name))
-        # run asynchorously
-        loop.create_task(cc.run(cp))
-
-    task = loop.create_task(connect())
-    task.add_done_callback(connect_cb)
-    return task
-
-@logged
-async def _do_fire2(uri: str,
-                   companion_conf: CompanionPluginConf2,
-                   fire: cg_launcher.LcFire,
-                   loop: BaseEventLoop,
-                   cleansession: bool=None,
-                   cafile: str=None,
-                   capath: str=None,
-                   cadata: str=None):
-    try:
-        log = _do_fire2._log
-        jobs = [run_client(i) for i in range(0, fire.rate)]
-        if fire.duration > 0:
-            jobs.append(asyncio.sleep(fire.duration))
-    except Exception as e:
-        pass
-
-    def is_running_client(_task: asyncio.Task):
-        cc = cg_util.future_successful_result(_task)
-        if cc is None:
-            # asyncio.sleep yields None
-            return False
-        cc = _task.result()
-        if not isinstance(cc, CgClient):
-            return False
-        return cc.is_connected()
-
-    pick_func = _pick_plugin_conf_func(companion_plugins)
-
-    def run_client(_i):
-        p = pick_func(_i + 1)
-        return _do_client_run(uri, p, fire, loop, cleansession, cafile, capath,
-                              cadata)
-
-    _do_fire._log.debug('at {} for {} secs'.format(loop.time(),
-                                                   fire.duration))
-    jobs = [run_client(i) for i in range(0, fire.rate)]
-    if fire.duration > 0:
-        jobs.append(asyncio.sleep(fire.duration))
-    # TODO: timeout is not needed as it may be conflicted with auto_reconnect
-    #timeout = None if fire.timeout == 0 else max(fire.duration, fire.timeout)
-    #done, pending = await asyncio.wait(jobs, loop=loop, timeout=timeout)
-    done, pending = await asyncio.wait(jobs, loop=loop, timeout=0)
-    running = len([d for d in done if is_running_client(d)])
-    _do_fire._log.debug('done:{}, running:{}'.format(len(done), running))
-    return running, fire.rate - running
-
-
-@logged
-async def _do_fire(uri: str,
-                   companion_plugins: List[CompanionPluginConf],
-                   fire: cg_launcher.LcFire,
-                   loop: BaseEventLoop,
-                   cleansession: bool=None,
-                   cafile: str=None,
-                   capath: str=None,
-                   cadata: str=None):
-
-    def is_running_client(_task: asyncio.Task):
-        cc = cg_util.future_successful_result(_task)
-        if cc is None:
-            # asyncio.sleep yields None
-            return False
-        cc = _task.result()
-        if not isinstance(cc, CgClient):
-            return False
-        return cc.is_connected()
-
-    pick_func = _pick_plugin_conf_func(companion_plugins)
-
-    def run_client(_i):
-        p = pick_func(_i + 1)
-        return _do_client_run(uri, p, fire, loop, cleansession, cafile, capath,
-                           cadata)
-
-    _do_fire._log.debug('at {} for {} secs'.format(loop.time(),
-                                                   fire.duration))
-    jobs = [run_client(i) for i in range(0, fire.rate)]
-    if fire.duration > 0:
-        jobs.append(asyncio.sleep(fire.duration))
-    # TODO: timeout is not needed as it may be conflicted with auto_reconnect
-    #timeout = None if fire.timeout == 0 else max(fire.duration, fire.timeout)
-    #done, pending = await asyncio.wait(jobs, loop=loop, timeout=timeout)
-    done, pending = await asyncio.wait(jobs, loop=loop, timeout=0)
-    running = len([d for d in done if is_running_client(d)])
-    _do_fire._log.debug('done:{}, running:{}'.format(len(done), running))
-    return running, fire.rate - running
-
-
-@logged
-async def launcher_runner(launcher: Launcher,
-                          companion_plugins: List[CompanionPluginConf]):
-    """
-    TODO: an Launcher instance should only be run by launcher_runner only once
-    might need to embed a state in Launcher to ensures that launcher.ask is
-    re-entrant free.
-
-    :param launcher:
-    :param companion_plugins:
-    :return:
-    """
-    @cg_util.convert_coro_exception(Exception, CgLauncherException)
-    async def _asking(coro):
-        return await coro
-    loop = launcher.loop
-    cmd_prev = None
-    cmd_resp = None
-    conf = launcher.config['broker']
-    uri = conf['uri']
-    cleansession = conf.get('cleansession')
-    cafile = conf.get('cafile')
-    capath = conf.get('capath')
-    cadata = conf.get('cadata')
-    try:
-        while True:
-            launcher_runner._log.debug("ask launcher {}".format(launcher.name))
-            done, _ = await asyncio.wait([_asking(launcher.ask(cmd_resp))])
-            cmd = cg_util.future_successful_result(done.pop())
-            if cmd is None:
-                launcher_runner._log.warn('can\'t retrieve cmd')
-                cmd_resp = LcResp(cmd_prev)
-                continue
-            if isinstance(cmd, cg_launcher.LcTerminate):
-                launcher_runner._log.debug('terminate launcher {}'.
-                                           format(launcher.name))
-                break
-            if isinstance(cmd, cg_launcher.LcIdle):
-                launcher_runner._log.debug('idle launcher {}'.
-                                           format(launcher.name))
-                if cmd.duration >= 0:
-                    await asyncio.sleep(cmd.duration, loop=loop)
-                cmd_resp = LcResp(cmd)
-                cmd_prev = cmd
-                continue
-            # isinstance(cmd, cg_launcher.LcFire)
-            before = loop.time()
-            launcher_runner._log.debug('before:{}'.format(before))
-            launcher_runner._log.debug('uri={}, cleansession={}, cafile={}, '
-                                       'capath={}, cadata={}'.
-                                       format(uri, cleansession, cafile, capath,
-                                              cadata))
-            succeeded, failed = await _do_fire(uri,
-                                               companion_plugins, cmd, loop,
-                                               cleansession=cleansession,
-                                               cafile=cafile,
-                                               capath=capath,
-                                               cadata=cadata)
-            after = loop.time()
-            launcher_runner._log.debug('after:{}'.format(after))
-            cmd_resp = LcResp(cmd, succeeded, failed)
-            cmd_prev = cmd
-    except Exception as e:
-        launcher_runner._log.exception(e)
-        raise CgException from e
-
-
-@attr.s(frozen=True)
-class CgContext(object):
-    name = attr.ib()
-    broker_conf = attr.ib()
-    client_conf = attr.ib()
-    loop = attr.ib(validators.instance_of(asyncio.BaseEventLoop))
-
-
-@attr.s
-class CompanionPluginConf2(object):
-    # TODO: validator for cls
-    cls = attr.ib()
-    conf = attr.ib()
-
-
-@logged
-def cg_run(config, func=None):
-    custom_loop = config.get('custom_loop', '')
-    if custom_loop == 'uvloop':
+def cg_custom_loop(package_name) -> asyncio.BaseEventLoop:
+    if package_name == 'uvloop':
         import uvloop
         policy = uvloop.EventLoopPolicy()
         asyncio.set_event_loop_policy(policy=policy)
+    else:
+        cg_custom_loop._log('{} not supported'.format(package_name))
+    return asyncio.get_event_loop()
 
-    loop = asyncio.get_event_loop()
 
+@logged
+def cg_create_metrics_task(config, service_id, loop=None):
+    log = cg_create_metrics_task._log
+    if loop is None:
+        loop = asyncio.get_event_loop()
     # service discovery
-    sd_id = config['service_discovery'].get('sd_id', uuid1())
     sd_host = config['service_discovery']['host']
     sd_port = config['service_discovery']['port']
-    cg_run._log.info('*****Service discovery service {}@{}:{}*****'.
-                     format(sd_id, sd_host, sd_port))
+    log.info('*****Service discovery service {} at {}:{}*****'.
+             format(service_id, sd_host, sd_port))
 
-    agent = cg_util.SdConsul(name='cg_metrics', service_id=sd_id, host=sd_host,
+    agent = cg_util.SdConsul(name='cg_metrics', service_id=service_id, host=sd_host,
                              port=sd_port)
     # metrics exposure
     ex_host = config['prometheus_exposure']['host']
     ex_port = config['prometheus_exposure']['port']
-    cg_run._log.info('*****Metrics exposed at {}:{}*****'.
-                     format(ex_host, ex_port))
+    log.info('*****Metrics exposed at {}:{}*****'. format(ex_host, ex_port))
+
+    # TODO: initialise custom metrics and update context
     loop.create_task(web.start_http_server(addr=ex_host, port=ex_port,
                                            loop=loop, service_discovery=agent))
-    # user specified tasks
-    func(loop)
-
-    # load companion
-    companion_conf = CompanionPluginConf2(
-        cls=DriverManager(namespace='choreography.companion_plugins',
-                          name=config['companion']['plugin'],
-                          invoke_on_load=False).driver(),
-        conf=config['companion'].get('config', dict()))
-    # create context
-    context = CgContext(name=sd_id, broker_conf=config['broker'],
-                        client_conf=config['client'], loop=loop)
-
-    # load and create launcher
-    launcher = DriverManager(namespace='choreography.launcher_plugins',
-                             name=config['launcher']['plugin'],
-                             invoke_on_load=True,
-                             invoke_kwds= {
-                                 'context': context,
-                                 'companion_conf': companion_conf,
-                                 **config['launcher'].get('config', dict())
-                             })
-    loop.run_until_complete(asyncio.ensure_future(cg_launcher_run(context,
-                                                                  launcher)))
-
-class LcCmdRunner(object):
-    @staticmethod
-    async def run_terminate(context, cmd: LcTerminate, loop=None):
-        return LcResp(cmd)
-    @staticmethod
-    async def run_idle(context, cmd: LcIdle, loop=None):
-        if cmd.duration >= 0:
-            await asyncio.sleep(cmd.duration, loop=loop)
-        return LcResp(cmd)
-    @staticmethod
-    async def run_fire(context, cmd: LcFire, loop=None):
-        succeeded, failed = 1, 1
-        return LcResp(cmd, succeeded=succeeded, failed=failed)
-
+    return CgMetrics()
 
 
 @logged
-async def cg_launcher_run(context: CgContext, launcher: Launcher, cmd_runner):
+def cg_create_context(config, service_id, metrics=None, loop=None):
     try:
-        log = cg_launcher_run._log
-        loop = context.loop
-
-        broker_conf = context.broker_conf
-        log.debug(broker_conf)
-
-        #uri = broker_conf['uri']
-        #cleansession = broker_conf.get('cleansession')
-        #cafile = broker_conf.get('cafile')
-        #capath = broker_conf.get('capath')
-        #cadata = broker_conf.get('cadata')
-
-        cmd_resp, cmd_prev = None, None
-        while True:
-            cmd = await asyncio.wait_for(launcher.ask(cmd_prev))
-            if isinstance(cmd, cg_launcher.LcTerminate):
-                log.debug('terminate launcher {}'. format(launcher.name))
-                cmd_resp = await cmd_runner.run_terminate(context, cmd)
-                cmd_prev = cmd
-                break
-            if isinstance(cmd, cg_launcher.LcIdle):
-                log.debug('idle launcher {}'.format(launcher.name))
-                cmd_resp = await cmd_runner.run_idle(context, cmd)
-                cmd_prev = cmd
-                continue
-            if isinstance(cmd, cg_launcher.LcFire):
-                cmd_resp = await cmd_runner.run_fire(context, cmd)
-                cmd_prev = cmd
-                #succeeded, failed = await _do_fire2(uri,
-                #                                   companion_plugins, cmd, loop,
-                #                                   cleansession=cleansession,
-                #                                   cafile=cafile,
-                #                                   capath=capath,
-                #                                   cadata=cadata)
-                #cmd_resp, cmd_prev = LcResp(cmd, succeeded, failed), cmd
-                continue
-            raise CgException('unsupported command {}'.format(cmd))
-    except CgException as e:
-        raise e
+        log = cg_create_context._log
+        if loop is None:
+            loop = asyncio.get_event_loop()
+        # load companion plugin
+        companion_cls = DriverManager(namespace='choreography.companion_plugins',
+                                      name=config['companion']['plugin'],
+                                      invoke_on_load=False).driver
+        # prepare context
+        return CgContext(service_id=service_id, metrics=metrics,
+                         broker_conf=config['broker'],
+                         launcher_conf=config['launcher'],
+                         client_conf=config['client'],
+                         companion_cls=companion_cls,
+                         companion_conf=config['companion'], loop=loop)
     except Exception as e:
-        log.exception(e)
         raise CgException from e
 
 
 @logged
-async def launcher_runner2(launcher: Launcher,
-                          companion_plugins: List[CompanionPluginConf]):
-    """
-    TODO: an Launcher instance should only be run by launcher_runner only once
-    might need to embed a state in Launcher to ensures that launcher.ask is
-    re-entrant free.
-
-    :param launcher:
-    :param companion_plugins:
-    :return:
-    """
-    @cg_util.convert_coro_exception(Exception, CgLauncherException)
-    async def _asking(coro):
-        return await coro
-    loop = launcher.loop
-    cmd_prev = None
-    cmd_resp = None
-    conf = launcher.config['broker']
-    uri = conf['uri']
-    cleansession = conf.get('cleansession')
-    cafile = conf.get('cafile')
-    capath = conf.get('capath')
-    cadata = conf.get('cadata')
+def cg_create_launcher_task(config, context: CgContext, launcher_runner=None):
     try:
-        while True:
-            launcher_runner._log.debug("ask launcher {}".format(launcher.name))
-            done, _ = await asyncio.wait([_asking(launcher.ask(cmd_resp))])
-            cmd = cg_util.future_successful_result(done.pop())
-            if cmd is None:
-                launcher_runner._log.warn('can\'t retrieve cmd')
-                cmd_resp = LcResp(cmd_prev)
-                continue
-            if isinstance(cmd, cg_launcher.LcTerminate):
-                launcher_runner._log.debug('terminate launcher {}'.
-                                           format(launcher.name))
-                break
-            if isinstance(cmd, cg_launcher.LcIdle):
-                launcher_runner._log.debug('idle launcher {}'.
-                                           format(launcher.name))
-                if cmd.duration >= 0:
-                    await asyncio.sleep(cmd.duration, loop=loop)
-                cmd_resp = LcResp(cmd)
-                cmd_prev = cmd
-                continue
-            # isinstance(cmd, cg_launcher.LcFire)
-            before = loop.time()
-            launcher_runner._log.debug('before:{}'.format(before))
-            launcher_runner._log.debug('uri={}, cleansession={}, cafile={}, '
-                                       'capath={}, cadata={}'.
-                                       format(uri, cleansession, cafile, capath,
-                                              cadata))
-            succeeded, failed = await _do_fire(uri,
-                                               companion_plugins, cmd, loop,
-                                               cleansession=cleansession,
-                                               cafile=cafile,
-                                               capath=capath,
-                                               cadata=cadata)
-            after = loop.time()
-            launcher_runner._log.debug('after:{}'.format(after))
-            cmd_resp = LcResp(cmd, succeeded, failed)
-            cmd_prev = cmd
+        log = cg_create_launcher_task._log
+        # load launcher plugin and create launcher
+        plugin = config['launcher']['plugin']
+        log.info('load launcher plugin {} and create'.format(plugin))
+        launcher = DriverManager(namespace='choreography.launcher_plugins',
+                                 name=plugin,
+                                 invoke_on_load=True,
+                                 invoke_kwds={
+                                     'context': context,
+                                     **config['launcher'].get('config', dict())
+                                 }).driver
+        if launcher_runner is None:
+            launcher_runner = LauncherRunnerDefault(context, launcher)
+        return context.loop.create_task(launcher_runner.run())
     except Exception as e:
-        launcher_runner._log.exception(e)
         raise CgException from e
 
 
 @logged
-async def runner_runner(ctx: RunnerContext, loop: BaseEventLoop=None):
-    if loop is None:
-        loop = asyncio.get_event_loop()
-    coros = []
-    for lc_conf in ctx.launcher_plugins:
-        # unlike companions, one launcher conf only creates one instance. I.e.
-        # lc_conf.name == launcher.plugin_name == launcher.name
-        lc = lc_conf.new_instance(loop, name=lc_conf.name)
-        cp_confs = ctx.launcher_companion_plugins[lc_conf.name]
-        coros.append(launcher_runner(lc, cp_confs))
-    await asyncio.wait(coros)
+def cg_run_forever(config):
+    log = cg_run_forever._log
+    def get_loop(custom_loop):
+        if custom_loop == 'uvloop':
+            log.info('custom loop {}'.format(custom_loop))
+            return cg_custom_loop('uvloop')
+        else:
+            return asyncio.get_event_loop()
+
+    service_id = config.get('service_id', uuid1())
+    loop = get_loop(config.get('custom_loop'))
+    #metrics = cg_create_metrics_task(config, service_id, loop)
+    #context = cg_create_context(config, service_id, metrics=metrics, loop=loop)
+    context = cg_create_context(config, service_id, loop=loop)
+    cg_create_launcher_task(config, context)
+    loop.run_forever()
+
+
+
 
 

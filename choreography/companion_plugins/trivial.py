@@ -10,9 +10,9 @@ shared_list = ['a']
 
 @logged
 class TestCompanion(object):
-    def __init__(self, name=''):
+    def __init__(self, context, **kwargs):
         super().__init__()
-        print('{} TestCp {}'.format(os.getpid(), name))
+        print('{} TestCp {}'.format(os.getpid(), context))
 
     def work(self):
         print('working')

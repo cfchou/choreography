@@ -3,7 +3,7 @@ import sys
 import asyncio
 import copy
 
-from choreography.choreograph import cg_run
+from choreography.choreograph import cg_run_forever
 from choreography import cg_util
 import yaml
 import click
@@ -37,11 +37,11 @@ config = {
     'broker': {
         'uri': 'mqtt://127.0.0.1',
         'cafile': 'server.pem',
+        'cleansession': True
         #'capath':
         #'cadata':
     },
     'client': {
-        'cleansession': True
         'certfile': 'client.crt',
         'keyfile': 'client.key',
         'check_hostname': False,
@@ -142,10 +142,6 @@ def other_work(loop, conf):
     #loop.create_task(log_mem(2, loop))
 
 
-def _run():
-    cg_run(config, func=other_work)
-    log.info('*****Done*****')
-
 
 @click.command()
 @click.option('--log_config', default='log_config.yaml', help='log_config.yaml')
@@ -154,7 +150,7 @@ def run(log_config):
     with open(log_config) as fh:
         try:
             logging.config.dictConfig(yaml.load(fh))
-            _run()
+            cg_run_forever(config)
         finally:
             logging.shutdown()
     print('*****Exits*****')

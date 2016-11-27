@@ -10,9 +10,9 @@ shared_list = ['a']
 
 @logged
 class TestLauncher(object):
-    def __init__(self, name=''):
+    def __init__(self, context, **kwargs):
         super().__init__()
-        print('{} TestLc {}'.format(os.getpid(), name))
+        print('{} TestLc {}'.format(os.getpid(), context))
 
     def work(self):
         print('working')
