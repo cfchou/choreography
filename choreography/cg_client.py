@@ -6,7 +6,7 @@ from hbmqtt.errors import HBMQTTException
 from hbmqtt.client import mqtt_connected
 from hbmqtt.session import IncomingApplicationMessage
 from choreography.cg_companion import Companion, CpResp
-from choreography.cg_companion import CpFire, CpIdle, CpPublish, CpSubscribe, CpDisconnect
+from choreography.cg_companion import CpFire, CpIdle, CpPublish, CpSubscribe, CpDisconnect, CpTerminate
 from choreography.cg_util import gen_client_id
 import choreography.cg_util
 from choreography.cg_metrics import *
@@ -118,7 +118,7 @@ class CgClient(MQTTClient):
                     # assert issubclass(ConnectException, ClientException)
                     self.__log.exception(e)
                     raise CgConnectException from e
-                except (ClientException, Exception) as e:
+                except (HBMQTTException, ClientException, Exception) as e:
                     # assert issubclass(ClientException, BaseException)
                     self.__log.exception(e)
                     # retry
@@ -131,7 +131,7 @@ class CgClient(MQTTClient):
             ret = await super().subscribe(topics)
             self.recv = self._loop.create_task(self.__do_receive())
             return ret
-        except (HBMQTTException, ClientException) as e:
+        except (HBMQTTException, ClientException, Exception) as e:
             self.__log.exception(e)
             raise CgSubException from e
 
@@ -141,7 +141,7 @@ class CgClient(MQTTClient):
             ret = await super().publish(topic, message, qos, retain)
             published_bytes_total.inc(len(message))
             return ret
-        except (HBMQTTException, ClientException) as e:
+        except (HBMQTTException, ClientException, Exception) as e:
             self.__log.exception(e)
             raise CgPubException from e
 
@@ -151,7 +151,7 @@ class CgClient(MQTTClient):
             # disconnect actively
             connections_total.dec()
             return ret
-        except (HBMQTTException, ClientException) as e:
+        except (HBMQTTException, ClientException, Exception) as e:
             self.__log.exception(e)
             raise CgSubException from e
 
@@ -231,38 +231,4 @@ class CgClient(MQTTClient):
                 self.recv.cancel()
             elif self.recv:
                 self.__log.debug('won\'t companion.ask but keep receiving')
-
-import abc
-from choreography.cg_context import CgContext
-
-class CompanionRunner(abc.ABC):
-    def __init__(self, context: CgContext, companion: Companion,
-                 client: CgClient):
-        pass
-
-    @abc.abstractmethod
-    async def run(self, cmd_resp: CpResp=None):
-        pass
-
-
-@logged
-class CompanionRunnerDefault(CompanionRunner):
-    def __init__(self, context: CgContext, companion: Companion,
-                 client: CgClient):
-        self.context = context
-        self.companion = companion
-        self.client = client
-
-    async def run(self, cmd_resp: CpResp = None):
-        try:
-            log = self.__log
-            cmd = await asyncio.wait_for(self.companion.ask(cmd_resp))
-
-        except CgCompanionException as e:
-            self.context.loop.create_task(self.client.disconnect())
-
-        except CgException as e:
-            raise e
-        except ClientException as e:
-            log.exception(e)
 
