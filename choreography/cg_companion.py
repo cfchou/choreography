@@ -97,7 +97,8 @@ class CpResp(object):
 
 @attr.s
 class CpFireResp(CpResp):
-    result = attr.ib()
+    result = attr.ib(default=None)
+    exception = attr.ib(default=None)
 
 
 class Companion(abc.ABC):
@@ -614,75 +615,68 @@ class CompanionRunnerDefault(CompanionRunner):
     context = attr.ib(validator=validators.instance_of(CgContext))
     companion = attr.ib(validator=validators.instance_of(Companion))
     client = attr.ib(validator=validators.instance_of(CgClient))
-    queue = attr.ib(validator=validators.instance_of(Queue))
 
-    async def run_fire(self, cmd: CpFire):
+    async def __run_fire(self, cmd: CpFire):
+        """
+
+        :param cmd:
+        :return:
+        :raises: :class:`asyncio.TimeoutError` if timeout occurs before a message is delivered
+                 :class:`CgException` if client disconnected, reconnecting,...
+        """
         log = self.__log
         loop = self.context.loop
         async def fire(_f: CpFire):
             if isinstance(_f, CpSubscribe):
-                return CpFireResp(cmd, await self.client.subscribe(_f.topics))
+                return CpFireResp(cmd,
+                                  result=await self.client.subscribe(_f.topics))
             elif isinstance(_f, CpPublish):
                 return CpFireResp(cmd,
-                                  await self.client.publish(_f.topic, _f.msg,
-                                                            _f.qos,
-                                                            retain=_f.retain))
+                                  result=await self.client.publish(_f.topic, _f.msg,
+                                                             _f.qos,
+                                                             retain=_f.retain))
             elif isinstance(_f, CpDisconnect):
-                return CpFireResp(cmd, await self.client.disconnect())
+                return CpFireResp(cmd,
+                                  result=await self.client.disconnect())
             else:
                 raise CgException('unsupported command {}'.format(cmd))
-
-        jobs = [fire(cmd)]
-        if cmd.duration > 0:
-            jobs.append(asyncio.sleep(cmd.duration, loop=loop))
-        done, _ = await asyncio.wait(jobs,
-                                     timeout=max(cmd.duration, cmd.timeout),
-                                     loop=loop)
-        for d in done:
-            if d.exception() is None and isinstance(d.result(), CpFireResp):
-                return d.result()
-        log.warn('{} failed {}'.format(self.client.client_id, cmd))
-        return None
+        try:
+            job = fire(cmd)
+            jobs = [job]
+            if cmd.duration > 0:
+                jobs.append(asyncio.sleep(cmd.duration, loop=loop))
+            await asyncio.wait(jobs, timeout=max(cmd.duration, cmd.timeout),
+                               loop=loop)
+            return job.result()
+        except asyncio.InvalidStateError as e:
+            # exceeds timeout, this exception is passed on to the companion
+            return CpFireResp(cmd, exception=e)
 
     async def __receive(self):
         try:
             msg = await self.client.deliver_message()
-            self.queue.put_nowait(msg)
-            self.context.loop.create_task(self.receive())
+            await self.companion.received(msg)
+            self.context.loop.create_task(self.__receive())
         except CgException as e:
+            await self.client.disconnect()
             raise e
         except Exception as e:
+            await self.client.disconnect()
             raise CgException from e
 
-
-    async def __run(self, cmd_resp: CpResp=None):
+    async def __ask(self, cmd_resp: CpResp=None):
         log = self.__log
         loop = self.context.loop
-        def get_nowait(queue):
-            msgs = []
-            try:
-                while True:
-                    msgs.append(queue.get_nowait())
-            except QueueEmpty:
-                pass
-            return msgs
         try:
-            msgs = get_nowait(self.queue)
-
-            cmd = await asyncio.wait_for(self.companion.ask(cmd_resp),
-                                         loop=loop)
+            cmd = await self.companion.ask(cmd_resp)
             log.debug('{} {}'. format(self.client.client_id, cmd))
             if isinstance(cmd, CpTerminate):
                 return
-            elif isinstance(cmd, CpIdle):
-                if cmd.duration >= 0:
-                    asyncio.sleep(cmd.duration, loop=loop)
-                loop.create_task(self.run(CpResp(cmd)))
             elif isinstance(cmd, CpFire):
-                ret = await self.run_fire(cmd)
+                ret = await self.__run_fire(cmd)
                 if isinstance(cmd, CpDisconnect):
                     return
-                loop.create_task(self, self.run(ret))
+                loop.create_task(self, self.__ask(ret))
             else:
                 raise CgException('unsupported command {}'.format(cmd))
         except CgException as e:
@@ -696,70 +690,5 @@ class CompanionRunnerDefault(CompanionRunner):
         log = self.__log
         loop = self.context.loop
         loop.create_task(self.__receive())
-        loop.create_task(self.__run(cmd_resp=cmd_resp))
-
-
-    async def receive(self):
-        self.__log.debug('constantly receiving msg: {}'.format(self.client_id))
-        count = 0
-        try:
-            while True:
-                try:
-                    # copy from @hbmqtt.client.mqtt_connected
-                    if not self._connected_state.is_set():
-                        self.__log.warning("{} not connected, waiting for it".
-                                           format(self.client_id))
-                        await self._connected_state.wait()
-                    msg = await self.deliver_message()
-                    data = msg.publish_packet.data
-                    data_len = len(data)
-                    data_uc = data.decode('utf-8')
-                    count += 1
-                    self.__log.info('{} receives {} bytes at {}'.
-                                    format(self.client_id, data_len,
-                                           self._loop.time()))
-                    prefix = data_uc[:min(48, data_len)]
-                    self.__log.info('msg_{} = {}'.format(count, prefix))
-                    await self.companion.received(msg)
-                except asyncio.CancelledError as e:
-                    self.__log.exception(e)
-                    self.__log.info('{} cancelled'.format(self.client_id))
-                    break
-                except ConnectException as e:
-                    # assert issubclass(ConnectException, ClientException)
-                    self.__log.exception(e)
-                    raise CgConnectException from e
-                except (HBMQTTException, ClientException, Exception) as e:
-                    # assert issubclass(ClientException, BaseException)
-                    self.__log.exception(e)
-                    # retry
-        finally:
-            self.__log.warn(' {} leaves')
-
-    async def run2(self, cmd_resp: CpResp = None):
-        log = self.__log
-        loop = self.context.loop
-        try:
-            cmd = await asyncio.wait_for(self.companion.ask(cmd_resp),
-                                         loop=loop)
-            log.debug('{} {}'. format(self.client.client_id, cmd))
-            if isinstance(cmd, CpTerminate):
-                return
-            elif isinstance(cmd, CpIdle):
-                if cmd.duration >= 0:
-                    asyncio.sleep(cmd.duration, loop=loop)
-                loop.create_task(self.run(CpResp(cmd)))
-            elif isinstance(cmd, CpFire):
-                ret = await self.run_fire(cmd)
-                if isinstance(cmd, CpDisconnect):
-                    return
-                loop.create_task(self, self.run(ret))
-            else:
-                raise CgException('unsupported command {}'.format(cmd))
-        except CgException as e:
-            await self.client.disconnect()
-            raise e
-        except Exception as e:
-            await self.client.disconnect()
-            raise CgException from e
+        loop.create_task(self.__ask(cmd_resp=cmd_resp))
 

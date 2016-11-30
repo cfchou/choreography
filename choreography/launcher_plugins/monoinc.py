@@ -7,12 +7,17 @@ from choreography.cg_exception import CgException, CgLauncherException
 from choreography.cg_util import gen_client_id, get_delay
 from choreography.cg_util import StepRespModel, StepResponder
 from choreography.cg_launcher import Launcher, LcResp
-from choreography.cg_launcher import LcCmd, LcFire, LcIdle, LcTerminate
+from choreography.cg_launcher import LcCmd, LcFire, LcTerminate
 import asyncio
 from asyncio import BaseEventLoop
 import random
 import attr
 from autologging import logged
+
+@attr.s
+class IdleCmd(object):
+    duration = attr.ib(0)
+
 
 @logged
 class MonoIncLauncher(StepResponder, Launcher):
@@ -41,7 +46,7 @@ class MonoIncLauncher(StepResponder, Launcher):
     # StepResponder implementation
     def run_delay(self):
         self.__log.debug('delay for {}'.format(self.model.delay))
-        self.lc_cmd = LcIdle(duration=self.model.delay)
+        self.lc_cmd = IdleCmd(duration=self.model.delay)
 
     def run_offset(self):
         self.__log.debug('fire offset {}'.format(self.model.offset))
@@ -49,8 +54,8 @@ class MonoIncLauncher(StepResponder, Launcher):
             cids=(gen_client_id() for _ in range(0, self.model.offset)))
 
     def run_step(self):
-        self.__log.debug('fire {} at step {}'.format(self.rate,
-                                                     self.model.current_step()))
+        self.__log.debug('fire {} at step {}'.
+                         format(self.rate, self.model.current_step()))
         self.lc_cmd = LcFire(
             cids=(gen_client_id() for _ in range(0, self.rate)))
 
@@ -58,7 +63,7 @@ class MonoIncLauncher(StepResponder, Launcher):
         now = self.loop.time()
         diff = max(self.model.step_start_t + self.model.step - now, 0)
         self.__log.debug('idle for {}'.format(diff))
-        self.lc_cmd = LcIdle(duration=diff)
+        self.lc_cmd = IdleCmd(duration=diff)
 
     def run_done(self):
         self.__log.debug('terminate')
@@ -67,6 +72,9 @@ class MonoIncLauncher(StepResponder, Launcher):
     # Launcher implementation
     async def ask(self, resp: LcResp=None) -> LcCmd:
         self.model.ask()
+        while isinstance(self.lc_cmd, IdleCmd):
+            await asyncio.sleep(self.lc_cmd.duration, loop=self.loop)
+            self.model.ask()
         return self.lc_cmd
 
 

@@ -35,14 +35,6 @@ class LcTerminate(LcCmd):
 
 
 @attr.s(frozen=True)
-class LcIdle(LcCmd):
-    """
-    Come back after 'duration' seconds
-    """
-    duration = attr.ib(default=0)
-
-
-@attr.s(frozen=True)
 class LcResp(object):
     prev_cmd = attr.ib(validator=attr.validators.instance_of(LcCmd))
 
@@ -108,12 +100,14 @@ class LauncherRunnerDefault(LauncherRunner):
         return await asyncio.wait_for(task, loop=loop)
 
     async def __run_fire(self, cmd: LcFire):
+        log = self.__log
+        loop = self.context.loop
         clients = [CgClient(client_id=cid, config=self.context.client_conf,
-                            loop=self.context.loop) for cid in cmd.cids]
+                            loop=loop) for cid in cmd.cids]
         jobs = [self.__connect_and_run(c) for c in clients]
         if cmd.duration > 0:
             jobs.append(asyncio.sleep(cmd.duration))
-        done, _ = await asyncio.wait(jobs, loop=self.context.loop)
+        done, _ = await asyncio.wait(jobs, loop=loop)
         succeeded = 0
         for d in done:
             if d.exception() is None and d.result() == CONNECTION_ACCEPTED:
@@ -123,19 +117,14 @@ class LauncherRunnerDefault(LauncherRunner):
     async def run(self, cmd_resp: LcResp=None):
         try:
             log = self.__log
-            cmd = await asyncio.wait_for(self.launcher.ask(cmd_resp),
-                                         loop=self.context.loop)
+            loop = self.context.loop
+            cmd = await self.launcher.ask(cmd_resp)
             log.debug('{} {}'. format(self.launcher.name, cmd))
             if isinstance(cmd, LcTerminate):
                 return
-            elif isinstance(cmd, LcIdle):
-                if cmd.duration >= 0:
-                    await asyncio.sleep(cmd.duration, loop=self.context.loop)
-                self.context.loop.create_task(self.run(LcResp(cmd)))
             elif isinstance(cmd, LcFire):
                 succeeded = await self.__run_fire(cmd)
-                self.context.loop.create_task(self.run(
-                    LcFireResp(cmd, result=succeeded)))
+                loop.create_task(self.run(LcFireResp(cmd, result=succeeded)))
             else:
                 raise CgLauncherException('unsupported command {}'.format(cmd))
         except CgException as e:
