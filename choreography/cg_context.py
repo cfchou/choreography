@@ -15,7 +15,6 @@ class CgContext(object):
     broker_conf = attr.ib()
     client_conf = attr.ib()
     launcher_conf = attr.ib()
-    companion_cls = attr.ib()
     companion_conf = attr.ib()
     loop = attr.ib(validators.instance_of(asyncio.BaseEventLoop))
 

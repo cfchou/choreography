@@ -16,10 +16,14 @@ from autologging import logged
 class CgClient(MQTTClient):
     """
 
-    hbmqtt.client.ClientException derives from BaseException which cannot be
-    captured by asyncio therefore event loop could be aborted.
-    CgClient replaces ClientException with CgClientException that derives
-    Exception.
+    hbmqtt.client.ClientException and hbmqtt.errors.HBMQTTException derive from
+    BaseException which cannot be captured by asyncio therefore event loop
+    could be aborted.
+
+    CgClient tries to remedy the situation as much as possible this situation by
+    replacing them with CgClientException that derives Exception. Note that
+    still does fix all.
+
     """
     def __init__(self, client_id=None, config=None,
                  loop: BaseEventLoop=None):

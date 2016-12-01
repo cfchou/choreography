@@ -1,11 +1,13 @@
 # vim:fileencoding=utf-8
 
-from choreography.cg_launcher import LauncherRunnerDefault
+from choreography.cg_launcher import LauncherRunner, LauncherRunnerDefault
 from choreography import cg_companion
 from choreography.cg_companion import Companion, CpResp
 from choreography import cg_util
 from choreography.cg_exception import *
 from choreography.cg_context import CgContext, CgMetrics
+from choreography.cg_companion import CompanionFactory
+from choreography.cg_companion import CompanionRunner, CompanionRunnerDefault
 from prometheus_async.aio import web
 from stevedore import DriverManager
 import random
@@ -64,38 +66,47 @@ def cg_create_context(config, service_id, metrics=None, loop=None):
         log = cg_create_context._log
         if loop is None:
             loop = asyncio.get_event_loop()
-        # load companion plugin
-        companion_cls = DriverManager(namespace='choreography.companion_plugins',
-                                      name=config['companion']['plugin'],
-                                      invoke_on_load=False).driver
         # prepare context
         return CgContext(service_id=service_id, metrics=metrics,
                          broker_conf=config['broker'],
                          launcher_conf=config['launcher'],
                          client_conf=config['client'],
-                         companion_cls=companion_cls,
                          companion_conf=config['companion'], loop=loop)
     except Exception as e:
         raise CgException from e
 
-
 @logged
-def cg_create_launcher_task(config, context: CgContext, launcher_runner=None):
+def cg_create_launcher_task(context:CgContext,
+                            launcher_runner:LauncherRunner=None,
+                            companion_runner:CompanionRunner=None):
     try:
         log = cg_create_launcher_task._log
+        # load companion plugin
+        log.info('load companion plugin'.
+                 format(context.companion_conf['plugin']))
+        companion_factory = CompanionFactory(
+            context=context,
+            companion_cls=DriverManager(
+                namespace='choreography.companion_plugins',
+                name=context.companion_conf['plugin'],
+                invoke_on_load=False).driver,
+            companion_conf=context.companion_conf.get('config', dict()))
         # load launcher plugin and create launcher
-        plugin = config['launcher']['plugin']
-        log.info('load launcher plugin {} and create'.format(plugin))
+        log.info('load launcher plugin {} and create'.
+                 format(context.launcher_conf['plugin']))
         launcher = DriverManager(namespace='choreography.launcher_plugins',
-                                 name=plugin,
+                                 name=context.launcher_conf['plugin'],
                                  invoke_on_load=True,
                                  invoke_kwds={
                                      'context': context,
-                                     **config['launcher'].get('config', dict())
+                                     'config': context.launcher_conf.get('config', dict())
                                  }).driver
+        if companion_runner is None:
+            companion_runner = CompanionRunnerDefault(context)
         if launcher_runner is None:
-            launcher_runner = LauncherRunnerDefault(context, launcher)
-        return context.loop.create_task(launcher_runner.run())
+            launcher_runner = LauncherRunnerDefault(context, companion_factory,
+                                                    companion_runner)
+        return context.loop.create_task(launcher_runner.run(launcher))
     except Exception as e:
         raise CgException from e
 
@@ -115,7 +126,7 @@ def cg_run_forever(config):
     #metrics = cg_create_metrics_task(config, service_id, loop)
     #context = cg_create_context(config, service_id, metrics=metrics, loop=loop)
     context = cg_create_context(config, service_id, loop=loop)
-    cg_create_launcher_task(config, context)
+    cg_create_launcher_task(context)
     loop.run_forever()
 
 

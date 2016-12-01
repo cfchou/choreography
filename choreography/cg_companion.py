@@ -6,7 +6,7 @@ import abc
 import pprint
 from hbmqtt.session import IncomingApplicationMessage
 from hbmqtt.client import MQTTClient, ClientException, ConnectException
-from choreography.cg_exception import CgException, CgCompanionException
+from choreography.cg_exception import CgException
 from choreography.cg_util import lorem_ipsum, get_delay
 from choreography.cg_util import StepResponder, StepRespModel
 from choreography.cg_client import CgClient
@@ -22,11 +22,13 @@ import attr
 from autologging import logged
 
 
+class CgCompanionException(CgException):
+    pass
+
 class CpCmd(abc.ABC):
     @abc.abstractmethod
     def __init__(self):
         pass
-
 
 @attr.s
 class CpFire(CpCmd):
@@ -102,6 +104,27 @@ class CpFireResp(CpResp):
 
 
 class Companion(abc.ABC):
+    context = attr.ib(validator=validators.instance_of(CgContext))
+    config = attr.ib()
+
+    @abc.abstractmethod
+    async def ask(self, resp: CpResp=None) -> CpCmd:
+        """
+
+        It would be call sequentially by a CgClient. However, 'recevied' might
+        be called concurrently
+        :param resp:
+        :return:
+        """
+
+    async def received(self, msg: IncomingApplicationMessage):
+        """
+        :param msg:
+        :return:
+        """
+        return
+
+class CompanionX(abc.ABC):
     """
     Each of 'ask' and 'received' are called sequentially.
     However, implementation must take care of concurrency, if any, between them.
@@ -142,6 +165,16 @@ class Companion(abc.ABC):
         :return:
         """
         return
+
+
+@attr.s
+class CompanionFactory(object):
+    context = attr.ib(validator=validators.instance_of(CgContext))
+    companion_cls = attr.ib()
+    companion_conf = attr.ib()
+    def new_instance(self):
+        return self.companion_cls(context=self.context,
+                                  config=self.companion_conf)
 
 
 @logged
@@ -454,7 +487,7 @@ fly_hist = Histogram('cg_pubsub_fly_hist', 'pubsub fly time')
 
 
 @logged
-class SelfPubSub(StepResp, Companion):
+class SelfPubSub(StepResponder, Companion):
     """
     SelfPubSub, after 'delay'~'delay_max' secs, subscribes a topic,
     then acts like a LinearPublisher to publish to the topic.
@@ -600,23 +633,16 @@ class SelfPubSub(StepResp, Companion):
 
 
 class CompanionRunner(abc.ABC):
-    def __init__(self, context: CgContext, companion: Companion,
-                 client: CgClient):
-        pass
-
+    context = attr.ib(validator=validators.instance_of(CgContext))
     @abc.abstractmethod
-    async def run(self, cmd_resp: CpResp=None):
+    async def run(self, companion, client):
         pass
 
 
 @logged
 @attr.s
 class CompanionRunnerDefault(CompanionRunner):
-    context = attr.ib(validator=validators.instance_of(CgContext))
-    companion = attr.ib(validator=validators.instance_of(Companion))
-    client = attr.ib(validator=validators.instance_of(CgClient))
-
-    async def __run_fire(self, cmd: CpFire):
+    async def __run_fire(self, companion, client, cmd: CpFire):
         """
 
         :param cmd:
@@ -626,22 +652,22 @@ class CompanionRunnerDefault(CompanionRunner):
         """
         log = self.__log
         loop = self.context.loop
-        async def fire(_f: CpFire):
+        async def fire(client, _f: CpFire):
             if isinstance(_f, CpSubscribe):
                 return CpFireResp(cmd,
-                                  result=await self.client.subscribe(_f.topics))
+                                  result=await client.subscribe(_f.topics))
             elif isinstance(_f, CpPublish):
                 return CpFireResp(cmd,
-                                  result=await self.client.publish(_f.topic, _f.msg,
+                                  result=await client.publish(_f.topic, _f.msg,
                                                              _f.qos,
                                                              retain=_f.retain))
             elif isinstance(_f, CpDisconnect):
                 return CpFireResp(cmd,
-                                  result=await self.client.disconnect())
+                                  result=await client.disconnect())
             else:
                 raise CgException('unsupported command {}'.format(cmd))
         try:
-            job = fire(cmd)
+            job = fire(client, cmd)
             jobs = [job]
             if cmd.duration > 0:
                 jobs.append(asyncio.sleep(cmd.duration, loop=loop))
@@ -652,43 +678,42 @@ class CompanionRunnerDefault(CompanionRunner):
             # exceeds timeout, this exception is passed on to the companion
             return CpFireResp(cmd, exception=e)
 
-    async def __receive(self):
+    async def __receive(self, companion, client):
         try:
-            msg = await self.client.deliver_message()
-            await self.companion.received(msg)
-            self.context.loop.create_task(self.__receive())
+            msg = await client.deliver_message()
+            await companion.received(msg)
+            self.context.loop.create_task(self.__receive(companion, client))
         except CgException as e:
-            await self.client.disconnect()
+            await client.disconnect()
             raise e
         except Exception as e:
-            await self.client.disconnect()
+            await client.disconnect()
             raise CgException from e
 
-    async def __ask(self, cmd_resp: CpResp=None):
+    async def __ask(self, companion, client, cmd_resp: CpResp=None):
         log = self.__log
         loop = self.context.loop
         try:
-            cmd = await self.companion.ask(cmd_resp)
-            log.debug('{} {}'. format(self.client.client_id, cmd))
+            cmd = await companion.ask(cmd_resp)
+            log.debug('{} {}'. format(client.client_id, cmd))
             if isinstance(cmd, CpTerminate):
                 return
             elif isinstance(cmd, CpFire):
-                ret = await self.__run_fire(cmd)
+                new_resp = await self.__run_fire(companion, client, cmd)
                 if isinstance(cmd, CpDisconnect):
                     return
-                loop.create_task(self, self.__ask(ret))
+                loop.create_task(self, self.__ask(companion, client, new_resp))
             else:
                 raise CgException('unsupported command {}'.format(cmd))
         except CgException as e:
-            await self.client.disconnect()
+            await client.disconnect()
             raise e
         except Exception as e:
-            await self.client.disconnect()
+            await client.disconnect()
             raise CgException from e
 
-    async def run(self, cmd_resp: CpResp=None):
-        log = self.__log
+    async def run(self, companion: Companion, client: CgClient):
         loop = self.context.loop
-        loop.create_task(self.__receive())
-        loop.create_task(self.__ask(cmd_resp=cmd_resp))
+        loop.create_task(self.__receive(companion, client))
+        await self.__ask(companion, client)
 

@@ -69,7 +69,7 @@ config = {
         }
     },
     'launcher': {
-        'plugin': 'TestLauncher',
+        'plugin': 'MonoIncLauncher',
         'config': {
             #after 'delay' secs, create and connect 'rate' number of clients
             # using 'step' secs for 'num_steps' times.

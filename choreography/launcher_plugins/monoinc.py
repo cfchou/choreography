@@ -3,10 +3,9 @@
 import abc
 from typing import List, Union, NamedTuple
 from choreography.cg_context import CgContext, CgMetrics
-from choreography.cg_exception import CgException, CgLauncherException
 from choreography.cg_util import gen_client_id, get_delay
 from choreography.cg_util import StepRespModel, StepResponder
-from choreography.cg_launcher import Launcher, LcResp
+from choreography.cg_launcher import Launcher, LcResp, CgLauncherException
 from choreography.cg_launcher import LcCmd, LcFire, LcTerminate
 import asyncio
 from asyncio import BaseEventLoop

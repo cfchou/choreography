@@ -3,8 +3,9 @@
 import abc
 from typing import List, Union, NamedTuple
 from choreography.cg_context import CgContext, CgMetrics
-from choreography.cg_exception import CgException, CgLauncherException
+from choreography.cg_exception import CgException
 from choreography.cg_client import CgClient
+from choreography.cg_companion import CompanionRunner, CompanionFactory
 from hbmqtt.client import ClientException
 from hbmqtt.mqtt.connack import CONNECTION_ACCEPTED
 import functools
@@ -13,6 +14,8 @@ import attr
 from attr import validators
 from autologging import logged
 
+class CgLauncherException(CgException):
+    pass
 
 class LcCmd(abc.ABC):
     pass
@@ -43,13 +46,10 @@ class LcResp(object):
 class LcFireResp(LcResp):
     result = attr.ib()
 
-
+@attr.s
 class Launcher(abc.ABC):
-    @abc.abstractmethod
-    def __init__(self, context: CgContext, config):
-        self.context = context
-        self.config = config
-        self.loop = context
+    context = attr.ib(validator=validators.instance_of(CgContext))
+    config = attr.ib()
 
     @abc.abstractmethod
     async def ask(self, resp: LcResp=None) -> LcCmd:
@@ -59,21 +59,21 @@ class Launcher(abc.ABC):
         """
 
 
+@attr.s
 class LauncherRunner(abc.ABC):
-    def __init__(self, context: CgContext, launcher: Launcher):
-        pass
+    context = attr.ib(validator=validators.instance_of(CgContext))
+    companion_factory = attr.ib(
+        validator=validators.instance_of(CompanionFactory))
+    companion_runner = attr.ib(
+        validator=validators.instance_of(CompanionRunner))
 
     @abc.abstractmethod
-    async def run(self, cmd_resp: LcResp=None):
+    async def run(self, launcher):
         pass
 
 
 @logged
-@attr.s
 class LauncherRunnerDefault(LauncherRunner):
-    context = attr.ib(validator=validators.instance_of(CgContext))
-    launcher = attr.ib(validator=validators.instance_of(Launcher))
-
     async def __connect_and_run(self, client: CgClient, **kwargs):
         log = self.__log
         loop = client.get_loop()
@@ -82,9 +82,9 @@ class LauncherRunnerDefault(LauncherRunner):
             try:
                 ret = fu.result()
                 if ret == CONNECTION_ACCEPTED:
-                    companion = self.context.companion_cls(
-                        self.context, **self.context.companion_conf)
-                    loop.create_task(client.run(companion=companion))
+                    companion = self.companion_factory.new_instance()
+                    loop.create_task(self.companion_runner.run(companion,
+                                                               client))
                 else:
                     # will be disconnected from the server side
                     log.error('{} connect failed {}'.format(client.client_id,
@@ -96,10 +96,10 @@ class LauncherRunnerDefault(LauncherRunner):
                 loop.create_task(client.disconnect())
 
         task = loop.create_task(client.connect(**self.context.broker_conf))
-        task.add_done_callback(functools.partial(connect_cb, loop=loop))
+        task.add_done_callback(connect_cb)
         return await asyncio.wait_for(task, loop=loop)
 
-    async def __run_fire(self, cmd: LcFire):
+    async def __run_fire(self, launcher, cmd: LcFire):
         log = self.__log
         loop = self.context.loop
         clients = [CgClient(client_id=cid, config=self.context.client_conf,
@@ -114,7 +114,7 @@ class LauncherRunnerDefault(LauncherRunner):
                 succeeded += 1
         return succeeded
 
-    async def run(self, cmd_resp: LcResp=None):
+    async def __run(self, launcher: Launcher, cmd_resp: LcResp=None):
         try:
             log = self.__log
             loop = self.context.loop
@@ -123,13 +123,17 @@ class LauncherRunnerDefault(LauncherRunner):
             if isinstance(cmd, LcTerminate):
                 return
             elif isinstance(cmd, LcFire):
-                succeeded = await self.__run_fire(cmd)
-                loop.create_task(self.run(LcFireResp(cmd, result=succeeded)))
+                succeeded = await self.__run_fire(launcher, cmd)
+                loop.create_task(self.__run(launcher,
+                                            LcFireResp(cmd, result=succeeded)))
             else:
                 raise CgLauncherException('unsupported command {}'.format(cmd))
         except CgException as e:
             raise e
         except Exception as e:
             raise CgException from e
+
+    async def run(self, launcher):
+        await self.__run(launcher)
 
 

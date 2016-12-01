@@ -47,7 +47,8 @@ setup(
         ],
         'choreography.companion_plugins': [
             #'IdleCompanion = choreography.cg_companion:IdleCompanion'
-            'TestCompanion = choreography.companion_plugins.trivial:TestCompanion'
+            #'TestCompanion = choreography.companion_plugins.trivial:TestCompanion',
+            'SelfSubPub = choreography.companion_plugins.selfsubpub:SelfSubPub'
         ]
     }
 )
