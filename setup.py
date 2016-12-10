@@ -42,7 +42,7 @@ setup(
         #'console_scripts': ['choreograph=choreography.scripts.choreograph:main'],
         'choreography.launcher_plugins': [
             #'LinearLauncher = choreography.launcher_plugins.linear:LinearLauncher'
-            'TestLauncher = choreography.launcher_plugins.trivial:TestLauncher',
+            #'TestLauncher = choreography.launcher_plugins.trivial:TestLauncher',
             'MonoIncLauncher = choreography.launcher_plugins.monoinc:MonoIncLauncher'
         ],
         'choreography.companion_plugins': [

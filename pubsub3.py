@@ -77,17 +77,17 @@ config = {
             # In each step, it may takes more then 'step' seconds. Moreover,
             # 'auto_reconnect' will affect the time well.
             'delay': 0,         # delay
-            'delay_max': 10,     # delay for random.uniform(delay, delay_max)
+            'delay_max': 1,     # delay for random.uniform(delay, delay_max)
             'offset': 0,
-            'rate': 2,
+            'rate': 1,
             'step': 1,          # connect 'rate' clients using 'step' secs
-            'num_steps': 2,     # total = 'offset' + 'rate' * 'num_steps'
+            'num_steps': 1,     # total = 'offset' + 'rate' * 'num_steps'
             'client_id_prefix': 'cg_pub_'
         },
     },
     # TODO: client_id_formatter
     'companion': {
-        'plugin': 'TestCompanion',
+        'plugin': 'SelfSubPub',
         'config': {
             'msg_len': 150,
             #'msg': b'===== whatever ===== you ===== say =====',

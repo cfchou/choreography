@@ -1,34 +1,30 @@
 # vim:fileencoding=utf-8
-import asyncio
-from asyncio import BaseEventLoop
-from asyncio import Queue, QueueEmpty, QueueFull
-import abc
-import pprint
-from hbmqtt.session import IncomingApplicationMessage
-from hbmqtt.client import MQTTClient, ClientException, ConnectException
 from choreography.cg_exception import CgException
 from choreography.cg_util import lorem_ipsum, get_delay
 from choreography.cg_util import StepResponder, StepRespModel
-from choreography.cg_client import CgClient
-import abc
 from choreography.cg_context import CgContext
-import attr
+import abc
+import asyncio
+from asyncio import BaseEventLoop
+from hbmqtt.session import IncomingApplicationMessage
 from attr import validators
 
 from typing import List, Tuple, Union, NamedTuple
 from transitions import Machine
-import random
 import attr
 from autologging import logged
 
 
 class CgCompanionException(CgException):
+    """
+    For a Companion implementation to raise
+    """
     pass
 
+
 class CpCmd(abc.ABC):
-    @abc.abstractmethod
-    def __init__(self):
-        pass
+    pass
+
 
 @attr.s
 class CpFire(CpCmd):
@@ -97,12 +93,14 @@ class CpIdle(CpCmd):
 class CpResp(object):
     prev_cmd = attr.ib(validator=attr.validators.instance_of(CpCmd))
 
+
 @attr.s
 class CpFireResp(CpResp):
     result = attr.ib(default=None)
     exception = attr.ib(default=None)
 
 
+@attr.s
 class Companion(abc.ABC):
     context = attr.ib(validator=validators.instance_of(CgContext))
     config = attr.ib()
@@ -123,6 +121,23 @@ class Companion(abc.ABC):
         :return:
         """
         return
+
+
+class CompanionFactory(abc.ABC):
+    @abc.abstractmethod
+    def get_instance(self):
+        pass
+
+
+@attr.s
+class CompanionRunner(abc.ABC):
+    context = attr.ib(validator=validators.instance_of(CgContext))
+
+    @abc.abstractmethod
+    async def run(self, companion, client):
+        pass
+
+
 
 class CompanionX(abc.ABC):
     """
@@ -165,16 +180,6 @@ class CompanionX(abc.ABC):
         :return:
         """
         return
-
-
-@attr.s
-class CompanionFactory(object):
-    context = attr.ib(validator=validators.instance_of(CgContext))
-    companion_cls = attr.ib()
-    companion_conf = attr.ib()
-    def new_instance(self):
-        return self.companion_cls(context=self.context,
-                                  config=self.companion_conf)
 
 
 @logged
@@ -630,90 +635,3 @@ class SelfPubSub(StepResponder, Companion):
         except Exception as e:
             self.__log.exception('{} {}'.format(self.sn, e))
             # swallow
-
-
-class CompanionRunner(abc.ABC):
-    context = attr.ib(validator=validators.instance_of(CgContext))
-    @abc.abstractmethod
-    async def run(self, companion, client):
-        pass
-
-
-@logged
-@attr.s
-class CompanionRunnerDefault(CompanionRunner):
-    async def __run_fire(self, companion, client, cmd: CpFire):
-        """
-
-        :param cmd:
-        :return:
-        :raises: :class:`asyncio.TimeoutError` if timeout occurs before a message is delivered
-                 :class:`CgException` if client disconnected, reconnecting,...
-        """
-        log = self.__log
-        loop = self.context.loop
-        async def fire(client, _f: CpFire):
-            if isinstance(_f, CpSubscribe):
-                return CpFireResp(cmd,
-                                  result=await client.subscribe(_f.topics))
-            elif isinstance(_f, CpPublish):
-                return CpFireResp(cmd,
-                                  result=await client.publish(_f.topic, _f.msg,
-                                                             _f.qos,
-                                                             retain=_f.retain))
-            elif isinstance(_f, CpDisconnect):
-                return CpFireResp(cmd,
-                                  result=await client.disconnect())
-            else:
-                raise CgException('unsupported command {}'.format(cmd))
-        try:
-            job = fire(client, cmd)
-            jobs = [job]
-            if cmd.duration > 0:
-                jobs.append(asyncio.sleep(cmd.duration, loop=loop))
-            await asyncio.wait(jobs, timeout=max(cmd.duration, cmd.timeout),
-                               loop=loop)
-            return job.result()
-        except asyncio.InvalidStateError as e:
-            # exceeds timeout, this exception is passed on to the companion
-            return CpFireResp(cmd, exception=e)
-
-    async def __receive(self, companion, client):
-        try:
-            msg = await client.deliver_message()
-            await companion.received(msg)
-            self.context.loop.create_task(self.__receive(companion, client))
-        except CgException as e:
-            await client.disconnect()
-            raise e
-        except Exception as e:
-            await client.disconnect()
-            raise CgException from e
-
-    async def __ask(self, companion, client, cmd_resp: CpResp=None):
-        log = self.__log
-        loop = self.context.loop
-        try:
-            cmd = await companion.ask(cmd_resp)
-            log.debug('{} {}'. format(client.client_id, cmd))
-            if isinstance(cmd, CpTerminate):
-                return
-            elif isinstance(cmd, CpFire):
-                new_resp = await self.__run_fire(companion, client, cmd)
-                if isinstance(cmd, CpDisconnect):
-                    return
-                loop.create_task(self, self.__ask(companion, client, new_resp))
-            else:
-                raise CgException('unsupported command {}'.format(cmd))
-        except CgException as e:
-            await client.disconnect()
-            raise e
-        except Exception as e:
-            await client.disconnect()
-            raise CgException from e
-
-    async def run(self, companion: Companion, client: CgClient):
-        loop = self.context.loop
-        loop.create_task(self.__receive(companion, client))
-        await self.__ask(companion, client)
-

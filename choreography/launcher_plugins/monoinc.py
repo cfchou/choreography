@@ -34,8 +34,8 @@ class MonoIncLauncher(StepResponder, Launcher):
                 raise CgLauncherException('Invalid rate={}'.format(self.rate))
             self.client_id_prefix = self.config.get('client_id_prefix')
             self.lc_cmd = None
-            self.__log.info('{} args: rate={}, step ={}, num_steps={}, delay={}'.
-                            format(self.name, self.rate, self.model.step,
+            self.__log.info('args: rate={}, step ={}, num_steps={}, delay={}'.
+                            format(self.rate, self.model.step,
                                    self.model.num_steps, self.model.delay))
         except CgLauncherException as e:
             raise e
@@ -59,7 +59,7 @@ class MonoIncLauncher(StepResponder, Launcher):
             cids=(gen_client_id() for _ in range(0, self.rate)))
 
     def run_idle(self):
-        now = self.loop.time()
+        now = self.context.loop.time()
         diff = max(self.model.step_start_t + self.model.step - now, 0)
         self.__log.debug('idle for {}'.format(diff))
         self.lc_cmd = IdleCmd(duration=diff)
@@ -72,7 +72,7 @@ class MonoIncLauncher(StepResponder, Launcher):
     async def ask(self, resp: LcResp=None) -> LcCmd:
         self.model.ask()
         while isinstance(self.lc_cmd, IdleCmd):
-            await asyncio.sleep(self.lc_cmd.duration, loop=self.loop)
+            await asyncio.sleep(self.lc_cmd.duration, loop=self.context.loop)
             self.model.ask()
         return self.lc_cmd
 

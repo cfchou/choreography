@@ -8,6 +8,7 @@ from choreography.cg_util import gen_client_id
 import choreography.cg_util
 from choreography.cg_metrics import *
 from choreography.cg_exception import *
+import functools
 import asyncio
 from asyncio import BaseEventLoop
 from autologging import logged
@@ -69,7 +70,7 @@ class CgClient(MQTTClient):
 
     @time(connect_hist)
     async def _connect_coro(self):
-        await super()._connect_coro()
+        return await super()._connect_coro()
 
     async def handle_connection_close(self):
         try:
@@ -83,7 +84,10 @@ class CgClient(MQTTClient):
 
     async def deliver_message(self, timeout=None):
         try:
-            msg = await mqtt_connected(super().deliver_message)(timeout)
+            if not self._connected_state.is_set():
+                self.__log.warning("Client not connected, waiting for it")
+                await self._connected_state.wait()
+            msg = await super().deliver_message(timeout)
             data = msg.publish_packet.data
             received_bytes_total.inc(len(data))
             received_total.inc()
@@ -95,6 +99,7 @@ class CgClient(MQTTClient):
     async def subscribe(self, topics):
         try:
             ret = await super().subscribe(topics)
+            # TODO: add metrics
             return ret
         except (HBMQTTException, ClientException, Exception) as e:
             self.__log.exception(e)
