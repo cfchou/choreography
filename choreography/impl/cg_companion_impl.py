@@ -26,9 +26,10 @@ class CompanionEntryPointFactory(CompanionFactory):
             name=context.companion_conf['plugin'],
             invoke_on_load=False).driver
 
-    def get_instance(self):
+    def get_instance(self, client_id):
         return self.companion_cls(context=self.context,
-                                  config=self.context.companion_conf.get('config', dict()))
+                                  config=self.context.companion_conf.get('config', dict()),
+                                  client_id=client_id)
 
 
 @logged

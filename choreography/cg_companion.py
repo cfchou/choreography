@@ -1,7 +1,7 @@
 # vim:fileencoding=utf-8
 from choreography.cg_exception import CgException
 from choreography.cg_util import lorem_ipsum, get_delay
-from choreography.cg_util import StepResponder, StepRespModel
+from choreography.plugin.step import StepResponder, StepRespModel
 from choreography.cg_context import CgContext
 import abc
 import asyncio
@@ -35,7 +35,7 @@ class CpFire(CpCmd):
         otherwise:
             duration < t < max(duration, timeout)
 
-    'duration' is usually 0 as we almost always want CgClient to come back
+    'duration' is usually 0 as we almost always want the client to come back
     immediately after fired.
     """
     duration = attr.ib(default=0)
@@ -70,7 +70,7 @@ class CpPublish(CpFire):
 
 class CpDisconnect(CpFire):
     """
-    Won't come back to ask. CgClient will Disconnect.
+    Won't come back to ask. Client will Disconnect.
     """
     def __init__(self, duration: float=0, timeout: float=0):
         super().__init__(duration=duration, timeout=timeout)
@@ -78,7 +78,7 @@ class CpDisconnect(CpFire):
 
 class CpTerminate(CpCmd):
     """
-    Won't come back to ask. CgClient is still running(no disconnect).
+    Won't come back to ask. Client is still running(no disconnect).
     """
     def __init__(self):
         pass
@@ -102,15 +102,28 @@ class CpFireResp(CpResp):
 
 @attr.s
 class Companion(abc.ABC):
+    """
+    Each of 'ask' and 'received' are called by the CompanionRunner sequentially.
+    However, implementation must take care of concurrency between them.
+    For example,
+    async def received(...):
+        self.some_state = False
+
+    async def received(...):
+        self.some_state = True
+        await some_thing
+        if not self.some_state:
+            print('received was called during await some_thing')
+
+    If concurrency is a concern, read 18.5.7. Synchronization primitives.
+    """
     context = attr.ib(validator=validators.instance_of(CgContext))
     config = attr.ib()
+    client_id = attr.ib()
 
     @abc.abstractmethod
     async def ask(self, resp: CpResp=None) -> CpCmd:
         """
-
-        It would be call sequentially by a CgClient. However, 'recevied' might
-        be called concurrently
         :param resp:
         :return:
         """
@@ -125,7 +138,7 @@ class Companion(abc.ABC):
 
 class CompanionFactory(abc.ABC):
     @abc.abstractmethod
-    def get_instance(self):
+    def get_instance(self, client_id):
         pass
 
 
@@ -138,48 +151,6 @@ class CompanionRunner(abc.ABC):
         pass
 
 
-
-class CompanionX(abc.ABC):
-    """
-    Each of 'ask' and 'received' are called sequentially.
-    However, implementation must take care of concurrency, if any, between them.
-    For example,
-    async def received(...):
-        self.some_state = False
-
-    async def received(...):
-        self.some_state = True
-        await some_thing
-        if not self.some_state:
-            print('received was called during await some_thing')
-
-    If concurrency is a concern, read 18.5.7. Synchronization primitives.
-    """
-    @abc.abstractmethod
-    def __init__(self, namespace, plugin_name, name, config,
-                 loop: BaseEventLoop=None):
-        self.namespace = namespace
-        self.plugin_name = plugin_name
-        self.name = name
-        self.config = config
-        self.loop = asyncio.get_event_loop() if loop is None else loop
-
-    @abc.abstractmethod
-    async def ask(self, resp: CpResp=None) -> CpCmd:
-        """
-
-        It would be call sequentially by a CgClient. However, 'recevied' might
-        be called concurrently
-        :param resp:
-        :return:
-        """
-
-    async def received(self, msg: IncomingApplicationMessage):
-        """
-        :param msg:
-        :return:
-        """
-        return
 
 
 @logged
@@ -522,7 +493,7 @@ class SelfPubSub(StepResponder, Companion):
             self.rate = self.config.get('rate', 1)
             if self.rate < 0:
                 raise CgCompanionException('Invalid rate={}'.format(self.rate))
-            # use 'client_id' as the default topic
+            # if no 'topic', use 'client_id' as the default topic
             self.topic = config.get('topic', name)
             self.msg_len = config.get('msg_len', 0)
             self.msg = config.get('msg')    # ignore 'msg_len'

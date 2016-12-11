@@ -40,15 +40,11 @@ setup(
     author_email='cfchou@gmail.com',
     entry_points={
         #'console_scripts': ['choreograph=choreography.scripts.choreograph:main'],
-        'choreography.launcher_plugins': [
-            #'LinearLauncher = choreography.launcher_plugins.linear:LinearLauncher'
-            #'TestLauncher = choreography.launcher_plugins.trivial:TestLauncher',
-            'MonoIncLauncher = choreography.launcher_plugins.monoinc:MonoIncLauncher'
+        'choreography.plugin.launcher': [
+            'MonoIncLauncher = choreography.plugin.launcher.monoinc:MonoIncLauncher'
         ],
-        'choreography.companion_plugins': [
-            #'IdleCompanion = choreography.cg_companion:IdleCompanion'
-            #'TestCompanion = choreography.companion_plugins.trivial:TestCompanion',
-            'SelfSubPub = choreography.companion_plugins.selfsubpub:SelfSubPub'
+        'choreography.plugin.companion': [
+            'SelfSubPub = choreography.plugin.companion.selfsubpub:SelfSubPub'
         ]
     }
 )
