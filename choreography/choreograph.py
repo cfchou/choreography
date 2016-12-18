@@ -1,15 +1,16 @@
 # vim:fileencoding=utf-8
 
 from choreography.cg_launcher import LauncherRunner, LauncherFactory
-from choreography.impl.cg_launcher_impl import LauncherRunnerDefault
-from choreography.impl.cg_launcher_impl import LauncherEntryPointFactory
-
-from choreography import cg_util
+from choreography.cg_companion import CompanionFactory, CompanionRunner
 from choreography.cg_exception import CgException
 from choreography.cg_context import CgContext, CgMetrics
-from choreography.cg_companion import CompanionFactory, CompanionRunner
-from choreography.impl.cg_companion_impl import CompanionEntryPointFactory
-from choreography.impl.cg_companion_impl import CompanionRunnerDefault
+
+from choreography.impl.launcher_runner import LauncherRunnerDefault
+from choreography.impl.companion_runner import CompanionRunnerDefault
+from choreography.impl.factory import LauncherEntryPointFactory
+from choreography.impl.factory import CompanionEntryPointFactory
+from choreography import cg_util
+
 from prometheus_async.aio import web
 import asyncio
 from prometheus_async.aio import count_exceptions, time, track_inprogress

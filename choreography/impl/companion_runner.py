@@ -3,8 +3,7 @@
 from choreography.cg_context import CgContext
 from choreography.cg_client import CgClient
 from choreography.cg_exception import CgException
-from choreography.cg_companion import Companion, CompanionFactory
-from choreography.cg_companion import CompanionRunner
+from choreography.cg_companion import Companion, CompanionRunner
 from choreography.cg_companion import CpFire, CpFireResp, CpResp
 from choreography.cg_companion import CpSubscribe, CpPublish, CpDisconnect
 from choreography.cg_companion import CpTerminate
@@ -12,24 +11,6 @@ from stevedore import DriverManager
 import asyncio
 from autologging import logged
 import attr
-
-
-@logged
-class CompanionEntryPointFactory(CompanionFactory):
-    def __init__(self, context: CgContext):
-        super().__init__()
-        self.context = context
-        self.__log.info('load choreography.companion_plugins:{}'.
-                        format(context.companion_conf['plugin']))
-        self.companion_cls = DriverManager(
-            namespace='choreography.companion_plugins',
-            name=context.companion_conf['plugin'],
-            invoke_on_load=False).driver
-
-    def get_instance(self, client_id):
-        return self.companion_cls(context=self.context,
-                                  config=self.context.companion_conf.get('config', dict()),
-                                  client_id=client_id)
 
 
 @logged
