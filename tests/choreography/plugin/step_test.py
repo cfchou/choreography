@@ -6,6 +6,7 @@ from transitions import Machine
 import asyncio
 from asyncio import BaseEventLoop
 from unittest.mock import MagicMock
+from unittest.mock import patch
 from autologging import logged
 
 @logged
@@ -34,7 +35,7 @@ class StepModel(object):
         # internal
         self.__steps_remained = self.num_steps
         self.step_start_t = -1
-        self.idle_start_t = -1
+        self.idle_until = -1
 
         self.machine = Machine(model=self, states=StepModel.states,
                                initial='created')
@@ -47,13 +48,13 @@ class StepModel(object):
         # step -> idle
         self.machine.add_transition(trigger='ask', source='step',
                                     dest='idle',
-                                    condition=['is_step_finished'],
+                                    conditions=['is_step_finished'],
                                     after='step_to_idle')
         # step -> step
         self.machine.add_transition(trigger='ask', source='step',
                                     dest='step',
                                     unless=['is_step_finished'],
-                                    condition=['has_steps'],
+                                    conditions=['has_steps'],
                                     after='step_to_step')
         # step -> done
         self.machine.add_transition(trigger='ask', source='step',
@@ -69,19 +70,19 @@ class StepModel(object):
         # idle -> done
         self.machine.add_transition(trigger='ask', source='idle',
                                     dest='done',
-                                    condition=['is_idle_elapsed'],
+                                    conditions=['is_idle_elapsed'],
                                     unless=['has_steps'])
         # idle -> step
         self.machine.add_transition(trigger='ask', source='idle',
                                     dest='step',
-                                    condition=['is_idle_elapsed', 'has_steps'],
+                                    conditions=['is_idle_elapsed', 'has_steps'],
                                     after='idle_to_step')
         # =====================
         # done -> done
         self.machine.add_transition(trigger='ask', source='done', dest='done')
 
     def is_idle_elapsed(self):
-        return self.idle_start_t + self.idle_duration <= self.loop.time()
+        return self.idle_until <= self.loop.time()
 
     def is_step_finished(self):
         return self.step_start_t + self.step_duration <= self.loop.time()
@@ -89,9 +90,9 @@ class StepModel(object):
     def step_to_idle(self):
         now = self.loop.time()
         self.step_start_t = -1
-        self.idle_start_t = now
-        duration = max(self.step_start_t + self.step_duration - now, 0)
-        return self.responder.run_idle(self.current_step(), duration)
+        assert self.idle_until == -1
+        self.idle_until = now + self.step_duration
+        return self.responder.run_idle(self.current_step(), self.step_duration)
 
     def step_to_step(self):
         self.__steps_remained -= 1
@@ -99,18 +100,18 @@ class StepModel(object):
         self.responder.run_step(self.current_step())
 
     def idle_to_idle(self):
-        duration = max(self.idle_start_t + self.idle_duration - self.loop.time(), 0)
+        duration = max(self.idle_until - self.loop.time(), 0)
         return self.responder.run_idle(self.current_step(), duration)
 
     def idle_to_step(self):
         self.__steps_remained -= 1
         self.step_start_t = self.loop.time()
-        self.idle_start_t = -1
+        self.idle_until = -1
         self.responder.run_step(self.current_step())
 
-    def on_enter_start(self):
+    def on_enter_started(self):
         if self.delay > 0:
-            self.idle_start_t = self.loop.time()
+            self.idle_until = self.loop.time() + self.delay
             self.to_idle()
             self.responder.run_idle(0, self.delay)
         elif self.has_steps():
@@ -129,6 +130,37 @@ class StepModel(object):
 
     def current_step(self):
         return self.num_steps - self.__steps_remained
+
+
+def test_start_to_done():
+    loop = MagicMock()
+    responder = MagicMock()
+    m = StepModel(responder=responder, loop=loop, num_steps=0)
+    m.ask()
+    responder.run_done.assert_called_once_with()
+
+
+#@patch(__name__ + '.BaseEventLoop')
+def test_start_to_delay():
+    loop = MagicMock()
+    responder = MagicMock()
+    m = StepModel(responder=responder, loop=loop, delay=10)
+    loop.time.return_value = 1
+    m.ask()
+    responder.run_idle.assert_called_with(0, 10)
+    loop.time.return_value = 2
+    m.ask()
+    responder.run_idle.assert_called_with(0, 9)
+    loop.time.return_value = 10
+    m.ask()
+    responder.run_idle.assert_called_with(0, 1)
+    loop.time.return_value = 11
+    responder.run_idle.reset_mock()
+    m.ask()
+    responder.run_idle.assert_not_called()
+    responder.run_step.assert_called_with(1)
+
+
 
 
 
