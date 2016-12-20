@@ -8,6 +8,8 @@ from asyncio import BaseEventLoop
 from unittest.mock import MagicMock
 from unittest.mock import patch
 from autologging import logged
+from nose import tools as nt
+from unittest import skip
 
 @logged
 class StepModel(object):
@@ -33,8 +35,8 @@ class StepModel(object):
         self.loop = asyncio.get_event_loop() if loop is None else loop
 
         # internal
-        self.__steps_remained = self.num_steps
-        self.step_start_t = -1
+        self.steps_remained = self.num_steps
+        self.step_until = -1
         self.idle_until = -1
 
         self.machine = Machine(model=self, states=StepModel.states,
@@ -48,19 +50,18 @@ class StepModel(object):
         # step -> idle
         self.machine.add_transition(trigger='ask', source='step',
                                     dest='idle',
-                                    conditions=['is_step_finished'],
+                                    unless=['is_step_finished'],
                                     after='step_to_idle')
         # step -> step
         self.machine.add_transition(trigger='ask', source='step',
                                     dest='step',
-                                    unless=['is_step_finished'],
-                                    conditions=['has_steps'],
+                                    conditions=['is_step_finished', 'has_steps'],
                                     after='step_to_step')
         # step -> done
         self.machine.add_transition(trigger='ask', source='step',
                                     dest='done',
-                                    unless=['is_step_finished',
-                                            'has_steps'])
+                                    conditions=['is_step_finished'],
+                                    unless=['has_steps'])
         # =====================
         # idle -> idle
         self.machine.add_transition(trigger='ask', source='idle',
@@ -85,28 +86,30 @@ class StepModel(object):
         return self.idle_until <= self.loop.time()
 
     def is_step_finished(self):
-        return self.step_start_t + self.step_duration <= self.loop.time()
+        return self.step_until <= self.loop.time()
 
     def step_to_idle(self):
-        now = self.loop.time()
-        self.step_start_t = -1
-        assert self.idle_until == -1
-        self.idle_until = now + self.step_duration
-        return self.responder.run_idle(self.current_step(), self.step_duration)
+        assert self.step_until != -1
+        # now is earlier than step_until
+        duration = max(self.step_until - self.loop.time(), 0)
+        self.idle_until = self.step_until
+        self.step_until = -1
+        return self.responder.run_idle(self.current_step(), duration)
 
     def step_to_step(self):
-        self.__steps_remained -= 1
-        self.step_start_t = self.loop.time()
+        self.step_until = self.loop.time() + self.step_duration
+        self.steps_remained -= 1
         self.responder.run_step(self.current_step())
 
     def idle_to_idle(self):
+        assert self.idle_until != -1
         duration = max(self.idle_until - self.loop.time(), 0)
         return self.responder.run_idle(self.current_step(), duration)
 
     def idle_to_step(self):
-        self.__steps_remained -= 1
-        self.step_start_t = self.loop.time()
+        self.step_until = self.loop.time() + self.step_duration
         self.idle_until = -1
+        self.steps_remained -= 1
         self.responder.run_step(self.current_step())
 
     def on_enter_started(self):
@@ -115,9 +118,9 @@ class StepModel(object):
             self.to_idle()
             self.responder.run_idle(0, self.delay)
         elif self.has_steps():
-            self.__steps_remained -= 1
-            self.step_start_t = self.loop.time()
+            self.step_until = self.loop.time() + self.step_duration
             self.to_step()
+            self.steps_remained -= 1
             self.responder.run_step(self.current_step())
         else:
             self.to_done()
@@ -126,41 +129,113 @@ class StepModel(object):
         self.responder.run_done()
 
     def has_steps(self):
-        return self.__steps_remained != 0
+        return self.steps_remained != 0
 
     def current_step(self):
-        return self.num_steps - self.__steps_remained
+        return self.num_steps - self.steps_remained
 
 
-def test_start_to_done():
-    loop = MagicMock()
-    responder = MagicMock()
+def test_created():
+    loop, responder = MagicMock(), MagicMock()
+    m = StepModel(responder=responder, loop=loop, num_steps=0)
+    nt.assert_equal(m.state, 'created')
+
+
+def test_done():
+    loop, responder = MagicMock(), MagicMock()
     m = StepModel(responder=responder, loop=loop, num_steps=0)
     m.ask()
     responder.run_done.assert_called_once_with()
+    nt.assert_equal(m.state, 'done')
 
 
-#@patch(__name__ + '.BaseEventLoop')
-def test_start_to_delay():
-    loop = MagicMock()
-    responder = MagicMock()
+def test_step_done():
+    loop, responder = MagicMock(), MagicMock()
+    m = StepModel(responder=responder, loop=loop, num_steps=1)
+    loop.time.return_value = 1
+    m.ask()
+    responder.run_step.assert_called_once_with(1)
+    nt.assert_equal(m.state, 'step')
+
+    responder.run_step.reset_mock()
+    loop.time.return_value = 1 + m.step_duration
+    m.ask()
+    responder.run_step.assert_not_called()
+    responder.run_done.assert_called_once_with()
+    nt.assert_equal(m.state, 'done')
+
+
+def test_delay_step():
+    loop, responder = MagicMock(), MagicMock()
     m = StepModel(responder=responder, loop=loop, delay=10)
+
     loop.time.return_value = 1
     m.ask()
     responder.run_idle.assert_called_with(0, 10)
+    nt.assert_equal(m.state, 'idle')
+
     loop.time.return_value = 2
     m.ask()
     responder.run_idle.assert_called_with(0, 9)
-    loop.time.return_value = 10
-    m.ask()
-    responder.run_idle.assert_called_with(0, 1)
-    loop.time.return_value = 11
+    nt.assert_equal(m.state, 'idle')
+
     responder.run_idle.reset_mock()
+    loop.time.return_value = 11
     m.ask()
     responder.run_idle.assert_not_called()
     responder.run_step.assert_called_with(1)
+    nt.assert_equal(m.state, 'step')
 
 
+def test_delay_done():
+    loop, responder = MagicMock(), MagicMock()
+    m = StepModel(responder=responder, loop=loop, delay=10, num_steps=0)
+
+    loop.time.return_value = 1
+    m.ask()
+    responder.run_idle.assert_called_with(0, 10)
+    nt.assert_equal(m.state, 'idle')
+
+    responder.run_idle.reset_mock()
+    loop.time.return_value = 11
+    m.ask()
+    responder.run_idle.assert_not_called()
+    responder.run_done.assert_called_once_with()
+    nt.assert_equal(m.state, 'done')
+
+
+def test_steps():
+    loop, responder = MagicMock(), MagicMock()
+    m = StepModel(responder=responder, loop=loop, num_steps=3, step_duration=3)
+
+    loop.time.return_value = 1
+    m.ask()
+    responder.run_step.assert_called_with(1)
+    nt.assert_equal(m.state, 'step')
+
+    # step#2 can begin at 4, but we come late
+    loop.time.return_value = 5
+    m.ask()
+    responder.run_step.assert_called_with(2)
+    nt.assert_equal(m.state, 'step')
+
+    # step#3 can begin at 8, so we'll idle
+    loop.time.return_value = 7
+    m.ask()
+    responder.run_idle.assert_called_with(2, 1)
+    nt.assert_equal(m.state, 'idle')
+
+    # step#3 begin at 8, we come on time
+    loop.time.return_value = 8
+    m.ask()
+    responder.run_step.assert_called_with(3)
+    nt.assert_equal(m.state, 'step')
+
+    # step#3 lasts until 11, and we're done
+    loop.time.return_value = 11
+    m.ask()
+    responder.run_done.assert_called_with()
+    nt.assert_equal(m.state, 'done')
 
 
 
