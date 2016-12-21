@@ -78,15 +78,14 @@ class CpDisconnect(CpFire):
 
 class CpTerminate(CpCmd):
     """
-    Won't come back to ask. Client is still running(no disconnect).
     """
     def __init__(self):
         pass
 
 
-@attr.s
 class CpIdle(CpCmd):
-    duration = attr.ib(default=0)
+    def __init__(self):
+        pass
 
 
 @attr.s
@@ -458,151 +457,4 @@ class SimpleSub(Companion):
         return self.cp_cmd
 
 
-from prometheus_client import Counter, Gauge, Summary, Histogram
-fly_hist = Histogram('cg_pubsub_fly_hist', 'pubsub fly time')
 
-
-@logged
-class SelfPubSub(StepResponder, Companion):
-    """
-    SelfPubSub, after 'delay'~'delay_max' secs, subscribes a topic,
-    then acts like a LinearPublisher to publish to the topic.
-
-    Given that:
-        'step' is the number of secs per step
-        'rate' is the number of publishes per 'step'
-        'num_steps' is the number of 'step's
-        total = offset + rate * num_steps
-
-    num_steps < 0 means infinite
-
-    Other configs:
-    if no 'topic', use 'client_id' as the topic
-    'msg_len' is ignored if 'msg' is presented.
-
-    """
-    def __init__(self, namespace, plugin_name, name, config,
-                 loop: BaseEventLoop = None):
-        try:
-            super().__init__(namespace, plugin_name, name, config, loop)
-            self.model = StepRespModel(responder=self,
-                                       num_steps=self.config.get('num_steps', 1),
-                                       step=self.config.get('step', 1),
-                                       delay=get_delay(config),
-                                       loop=loop)
-            self.rate = self.config.get('rate', 1)
-            if self.rate < 0:
-                raise CgCompanionException('Invalid rate={}'.format(self.rate))
-            # if no 'topic', use 'client_id' as the default topic
-            self.topic = config.get('topic', name)
-            self.msg_len = config.get('msg_len', 0)
-            self.msg = config.get('msg')    # ignore 'msg_len'
-            self.qos = config.get('qos', 0)
-            if self.qos < 0 or self.qos > 2:
-                raise CgCompanionException('invalid qos {}'.format(self.qos))
-            self.retain = config.get('retain', False)
-            # only in use when num_steps >= 0
-            self.auto_disconnect = config.get('auto_disconnect', True)
-
-            self.subscribed = False
-
-            # hack to skip model transition
-            self.offset_countdown = 0
-            self.rate_countdown = 0
-
-            self.total = 0
-            self.cp_cmd = None
-            # short name for logging
-            self.sn = 'cg_pub_' + self.name[-16:]
-
-            self.__log.info('{}: offset({}) + rate({}) * num_steps({}); step({})'.
-                            format(self.sn, self.model.offset, self.rate,
-                                   self.model.num_steps, self.model.step))
-
-        except CgCompanionException as e:
-            raise e
-        except Exception as e:
-            raise CgCompanionException('Invalid configs') from e
-
-    def msg_marked(self):
-        mark = bytes('{:05} {} {}:'.
-                     format(self.total, self.name, self.loop.time()).
-                     encode('utf-8'))
-        if self.msg is None:
-            if self.msg_len > len(mark):
-                return mark + lorem_ipsum(self.msg_len - len(mark))
-            else:
-                return mark
-        else:
-            return self.msg
-
-    def run_delay(self):
-        self.__log.debug('{} delay for {}'.format(self.sn, self.model.delay))
-        self.cp_cmd = CpIdle(duration=self.model.delay)
-
-    def run_offset(self):
-        self.__log.debug('{} fire offset {}'.format(self.sn, self.model.offset))
-        assert self.model.offset > 0
-        self.offset_countdown = self.model.offset - 1
-        self.total += 1
-        self.cp_cmd = CpPublish(topic=self.topic, msg=self.msg_marked(),
-                                qos=self.qos, retain=self.retain)
-
-    def run_step(self):
-        self.__log.debug('{} fire at step {}'.
-                         format(self.sn, self.rate, self.model.current_step()))
-        self.rate_countdown = self.rate - 1
-        self.total += 1
-        self.cp_cmd = CpPublish(topic=self.topic, msg=self.msg_marked(),
-                                qos=self.qos, retain=self.retain)
-
-    def run_idle(self):
-        now = self.loop.time()
-        diff = max(self.model.step_start_t + self.model.step - now, 0)
-        self.__log.debug('{} idle for {}'.format(self.sn, diff))
-        self.cp_cmd = CpIdle(duration=diff)
-
-    def run_done(self):
-        assert self.model.num_steps >= 0
-        self.__log.debug('{} step done {}'.format(self.sn, self.step_count))
-        if self.auto_disconnect:
-            self.cp_cmd = CpDisconnect()
-        else:
-            self.cp_cmd = CpTerminate()
-
-    async def ask(self, resp: CpResp = None) -> CpCmd:
-        if not self.subscribed:
-            self.subscribed = True
-            return CpSubscribe([(self.topic, self.qos)])
-
-        # Here skipping model.ask() for a few times(xxx_countdown) to stay
-        # in the same transition. This hack is ugly due to the fact that
-        # StepModel is not general enough. However, I want to keep it simple.
-        if self.offset_countdown > 0:
-            self.offset_countdown -= 1
-            self.total += 1
-            self.cp_cmd = CpPublish(topic=self.topic, msg=self.msg_marked(),
-                                    qos=self.qos, retain=self.retain)
-        elif self.rate_countdown > 0:
-            self.rate_countdown -= 1
-            self.total += 1
-            self.cp_cmd = CpPublish(topic=self.topic, msg=self.msg_marked(),
-                                    qos=self.qos, retain=self.retain)
-        else:
-            self.model.ask()
-        return self.cp_cmd
-
-    async def received(self, msg: IncomingApplicationMessage):
-        try:
-            # see self.msg_marked()
-            # mark = bytes('{:05} {} {}:'....)
-            x = msg.publish_packet.data.decode('utf-8')
-            i = x.find(' ')
-            j = x.find(' ', i+1)
-            k = x.find(':', j+1)
-            diff = self.loop.time() - float(x[j+1:k])
-            self.__log.debug('{} fly: {}'.format(self.sn, diff))
-            fly_hist.observe(diff)
-        except Exception as e:
-            self.__log.exception('{} {}'.format(self.sn, e))
-            # swallow

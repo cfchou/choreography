@@ -7,234 +7,150 @@ import asyncio
 from asyncio import BaseEventLoop
 from autologging import logged
 
+class StepModelResponder(object):
+    def run_step(self, nth_step):
+        pass
 
-class StepResponder(abc.ABC):
-    """
-    Implement this interface to react whenever a transition happens.
-    """
-    @abc.abstractmethod
-    def run_step(self):
+    def run_idle(self, nth_step, duration):
         """
+        Each step is expected to run :class:`StepModel`.*step_duration*. If you
+        :class:`StepModel`.*ask* before *nth_step*'s completion, this function will be
+        triggered with current *nth_step* and remaining *duration*.
+
+        :note: When *nth_step*=0 . It marks the delay before the 1st step. In
+        that case, *duration* is the *delay* set in StepModel.
+
+        :param nth_step:
+        :param duration:
         :return:
         """
+        pass
 
-    @abc.abstractmethod
-    def run_offset(self):
-        """
-        :return:
-        """
-
-    @abc.abstractmethod
-    def run_delay(self):
-        """
-        :return:
-        """
-
-    @abc.abstractmethod
-    def run_idle(self):
-        """
-        :return:
-        """
-
-    @abc.abstractmethod
     def run_done(self):
-        """
-        :return:
-        """
+        pass
 
 
-@logged
 class StepModel(object):
     """
     A state machine that presents a monotonically increasing model.
-    total = rate * num_steps + offset
     """
-    states = ['created', 'delaying', 'offsetting', 'stepping', 'idling',
-              'done']
+    states = ['created', 'start', 'step', 'idle', 'done']
 
-    def __init__(self, num_steps=-1, step=1, offset=0, delay=0,
-                 loop: BaseEventLoop=None):
-        if step < 0 or delay < 0 or offset < 0:
-            raise CgException('Invalid configs')
-
+    def __init__(self, responder: StepModelResponder, num_steps=-1,
+                 step_duration=1, delay=0, loop: BaseEventLoop=None):
+        self.responder = responder
         # num_steps < 0 means infinite
         self.num_steps = int(num_steps)
-        self.step = int(step)
-        self.offset = int(offset)
+        if step_duration < 0 or delay < 0:
+            raise Exception('Invalid configs')
+        self.step_duration = step_duration
         self.delay = delay
         self.loop = asyncio.get_event_loop() if loop is None else loop
 
         # internal
-        self.__steps_remained = self.num_steps
-        self.delay_start_t = 0
-        self.step_start_t = 0
+        self.steps_remained = self.num_steps
+        self.step_until = -1
+        self.idle_until = -1
 
         self.machine = Machine(model=self, states=StepModel.states,
                                initial='created')
 
         # =====================
-        # created -> delaying
+        # created -> start
         self.machine.add_transition(trigger='ask', source='created',
-                                    dest='delaying',
-                                    conditions=['has_delay'],
-                                    after='run_delay')
-        # created -> offsetting
-        self.machine.add_transition(trigger='ask', source='created',
-                                    dest='offsetting',
-                                    conditions=['has_offset'],
-                                    unless=['has_delay'],
-                                    after='run_offset')
-        # created -> stepping
-        self.machine.add_transition(trigger='ask', source='created',
-                                    dest='stepping',
-                                    conditions=['has_steps'],
-                                    unless=['has_offset', 'has_delay'],
-                                    after='run_step')
-        # created -> done
-        self.machine.add_transition(trigger='ask', source='created',
-                                    dest='done',
-                                    unless=['has_offset', 'has_delay',
-                                            'has_steps'],
-                                    after='run_done')
-
+                                    dest='start')
         # =====================
-        # delaying -> offsetting
-        self.machine.add_transition(trigger='ask', source='delaying',
-                                    dest='offsetting',
-                                    conditions=['is_delay_elapsed',
-                                                'has_offset'],
-                                    after='run_offset')
-
-        # delaying -> stepping
-        self.machine.add_transition(trigger='ask', source='delaying',
-                                    dest='stepping',
-                                    conditions=['is_delay_elapsed',
-                                                'has_steps'],
-                                    unless=['has_offset'],
-                                    after='run_step')
-        # delaying -> done
-        self.machine.add_transition(trigger='ask', source='delaying',
+        # step -> idle
+        self.machine.add_transition(trigger='ask', source='step',
+                                    dest='idle',
+                                    unless=['is_step_finished'],
+                                    after='step_to_idle')
+        # step -> step
+        self.machine.add_transition(trigger='ask', source='step',
+                                    dest='step',
+                                    conditions=['is_step_finished', 'has_steps'],
+                                    after='step_to_step')
+        # step -> done
+        self.machine.add_transition(trigger='ask', source='step',
                                     dest='done',
-                                    conditions=['is_delay_elapsed'],
-                                    unless=['has_offset', 'has_steps'],
-                                    after='run_done')
-
+                                    conditions=['is_step_finished'],
+                                    unless=['has_steps'])
         # =====================
-        # offsetting -> stepping
-        self.machine.add_transition(trigger='ask', source='offsetting',
-                                    dest='stepping',
-                                    conditions=['has_steps'],
-                                    after='run_step')
-        # offsetting -> done
-        self.machine.add_transition(trigger='ask', source='offsetting',
+        # idle -> idle
+        self.machine.add_transition(trigger='ask', source='idle',
+                                    dest='idle',
+                                    unless=['is_idle_elapsed'],
+                                    after='idle_to_idle')
+        # idle -> done
+        self.machine.add_transition(trigger='ask', source='idle',
                                     dest='done',
-                                    unless=['has_steps'],
-                                    after='run_done')
+                                    conditions=['is_idle_elapsed'],
+                                    unless=['has_steps'])
+        # idle -> step
+        self.machine.add_transition(trigger='ask', source='idle',
+                                    dest='step',
+                                    conditions=['is_idle_elapsed', 'has_steps'],
+                                    after='idle_to_step')
         # =====================
-        # stepping -> idling
-        self.machine.add_transition(trigger='ask', source='stepping',
-                                    dest='idling',
-                                    conditions=['is_step_finished_early'],
-                                    after='run_idle')
-        # stepping -> stepping (explicitly transition to itself)
-        self.machine.add_transition(trigger='ask', source='stepping',
-                                    dest='stepping',
-                                    conditions=['has_steps'],
-                                    unless=['is_step_finished_early'],
-                                    after='run_step')
-        # stepping -> done
-        self.machine.add_transition(trigger='ask', source='stepping',
-                                    dest='done',
-                                    unless=['is_step_finished_early',
-                                            'has_steps'],
-                                    after='run_done')
-        # =====================
-        # idling -> stepping
-        self.machine.add_transition(trigger='ask', source='idling',
-                                    dest='stepping',
-                                    conditions=['has_steps'],
-                                    unless=['is_step_finished_early'],
-                                    after='run_step')
-        # idling -> done
-        self.machine.add_transition(trigger='ask', source='idling',
-                                    dest='done',
-                                    unless=['has_steps',
-                                            'is_step_finished_early'],
-                                    after='run_done')
-        # =====================
-        # done -> done (explicitly create a trivial transition)
-        self.machine.add_transition(trigger='ask', source='done',
-                                    dest='done',
-                                    after='run_done')
+        # done -> done
+        self.machine.add_transition(trigger='ask', source='done', dest='done')
 
-    def on_enter_delaying(self):
-        self.delay_start_t = self.loop.time()
+    def __str__(self, *args, **kwargs):
+        return 'StepModel(responder={}, num_steps={}, step_duration={}, ' \
+               'delay={}, loop: {})'.format(self.responder, self.num_steps,
+                                            self.step_duration, self.delay,
+                                            self.loop)
 
-    def on_enter_stepping(self):
-        self.step_start_t = self.loop.time()
-        self.__steps_remained -= 1
+    def is_idle_elapsed(self):
+        return self.idle_until <= self.loop.time()
 
-    def is_delay_elapsed(self):
-        now = self.loop.time()
-        return now >= self.delay_start_t + self.delay
+    def is_step_finished(self):
+        return self.step_until <= self.loop.time()
 
-    def is_step_finished_early(self):
-        now = self.loop.time()
-        return self.step_start_t + self.step > now
+    def step_to_idle(self):
+        assert self.step_until != -1
+        # now is earlier than step_until
+        duration = max(self.step_until - self.loop.time(), 0)
+        self.idle_until = self.step_until
+        self.step_until = -1
+        return self.responder.run_idle(self.current_step(), duration)
 
-    def has_delay(self):
-        return self.delay > 0
+    def step_to_step(self):
+        self.step_until = self.loop.time() + self.step_duration
+        self.steps_remained -= 1
+        self.responder.run_step(self.current_step())
 
-    def has_offset(self):
-        return self.offset > 0
+    def idle_to_idle(self):
+        assert self.idle_until != -1
+        duration = max(self.idle_until - self.loop.time(), 0)
+        return self.responder.run_idle(self.current_step(), duration)
 
-    def has_steps(self):
-        return self.__steps_remained != 0
+    def idle_to_step(self):
+        self.step_until = self.loop.time() + self.step_duration
+        self.idle_until = -1
+        self.steps_remained -= 1
+        self.responder.run_step(self.current_step())
 
-    def current_step(self):
-        return self.num_steps - self.__steps_remained
+    def on_enter_start(self):
+        if self.delay > 0:
+            self.idle_until = self.loop.time() + self.delay
+            self.to_idle()
+            self.responder.run_idle(0, self.delay)
+        elif self.has_steps():
+            self.step_until = self.loop.time() + self.step_duration
+            self.to_step()
+            self.steps_remained -= 1
+            self.responder.run_step(self.current_step())
+        else:
+            self.to_done()
 
-    # ===== overrides ======
-    def run_delay(self):
-        pass
-
-    def run_offset(self):
-        pass
-
-    def run_step(self):
-        pass
-
-    def run_idle(self):
-        pass
-
-    def run_done(self):
-        pass
-
-
-
-class StepRespModel(StepModel):
-    """
-    Execute implementation of StepResponder triggered by StepModel
-    """
-    def __init__(self, responder: StepResponder, num_steps=-1, step=1,
-                 offset=0, delay=0, loop: BaseEventLoop=None):
-        super().__init__(num_steps, step, offset, delay, loop)
-        self.responder = responder
-
-    def run_delay(self):
-        self.responder.run_delay()
-
-    def run_offset(self):
-        self.responder.run_offset()
-
-    def run_step(self):
-        self.responder.run_step()
-
-    def run_idle(self):
-        self.responder.run_idle()
-
-    def run_done(self):
+    def on_enter_done(self):
         self.responder.run_done()
 
+    def has_steps(self):
+        return self.steps_remained != 0
+
+    def current_step(self):
+        return self.num_steps - self.steps_remained
 
 
