@@ -5,7 +5,7 @@ from choreography.cg_util import gen_client_id, get_delay, lorem_ipsum
 from choreography.plugin.step import StepModel, StepModelResponder
 from choreography.cg_companion import Companion, CgCompanionException
 from choreography.cg_companion import CpResp, CpFireResp, CpCmd
-from choreography.cg_companion import CpIdle, CpTerminate, CpDisconnect
+from choreography.cg_companion import CpTerminate, CpDisconnect
 from choreography.cg_companion import CpSubscribe, CpPublish
 import asyncio
 import attr
@@ -18,7 +18,10 @@ class SimpleSub(StepModelResponder, Companion):
         try:
             super().__init__(context, config, client_id)
             self.delay = get_delay(config),
-
+            # disconnect_after == -1 means no disconnect only CpTerminate
+            self.disconnect_after = config.get('disconnect_after', -1)
+            self.subscribed = False
+            self.topics = []
             topics = config.get('topics')
             topic = config.get('topic')
             qos = config.get('qos', 0)
@@ -33,7 +36,8 @@ class SimpleSub(StepModelResponder, Companion):
                     raise CgCompanionException('invalid topic, qos: {}, {}'.
                                                format(t, q))
                 self.topics.append((t, q))
-
+            if len(self.topics) == 0:
+                raise CgCompanionException('no topics')
 
         except CgCompanionException as e:
             raise e
@@ -41,4 +45,14 @@ class SimpleSub(StepModelResponder, Companion):
             raise CgCompanionException('Invalid configs') from e
 
     async def ask(self, resp: CpResp = None) -> CpCmd:
-        pass
+        if self.subscribed:
+            if self.disconnect_after >= 0:
+                await asyncio.sleep(self.disconnect_after, loop=self.context.loop)
+                return CpDisconnect()
+            else:
+                return CpTerminate()
+        if self.delay > 0:
+            await asyncio.sleep(self.delay, loop=self.context.loop)
+        self.cp_cmd = CpSubscribe(self.topics)
+        self.subscribed = True
+

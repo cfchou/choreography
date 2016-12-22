@@ -5,9 +5,8 @@ from choreography.cg_client import CgClient
 from choreography.cg_exception import CgException
 from choreography.cg_companion import Companion, CompanionRunner
 from choreography.cg_companion import CpFire, CpFireResp, CpResp
-from choreography.cg_companion import CpSubscribe, CpPublish, CpDisconnect
-from choreography.cg_companion import CpTerminate, CpIdle
-from stevedore import DriverManager
+from choreography.cg_companion import CpSubscribe, CpPublish
+from choreography.cg_companion import CpTerminate, CpDisconnect
 import asyncio
 from autologging import logged
 import attr
@@ -70,15 +69,6 @@ class CompanionRunnerDefault(CompanionRunner):
         try:
             cmd = await companion.ask(cmd_resp)
             log.debug('{} {}'. format(client.client_id, cmd))
-            """
-            TODO:
-            CpIdle: no companion.ask but keep companion.receive
-            CpTerminate: no companion.ask & no companion.receive
-            CpDisconnect: disconnect then CpTerminate
-            :note: unless disconnect, the connection is not aborted.
-            """
-            if isinstance(cmd, CpIdle):
-                return
             if isinstance(cmd, CpTerminate):
                 return
             elif isinstance(cmd, CpFire):

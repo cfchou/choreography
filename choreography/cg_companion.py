@@ -26,30 +26,17 @@ class CpCmd(abc.ABC):
     pass
 
 
-@attr.s
 class CpFire(CpCmd):
-    """
-    Fire once, only coming back to ask after 't' secs where:
-        if 'timeout' is 0:
-            duration < t
-        otherwise:
-            duration < t < max(duration, timeout)
-
-    'duration' is usually 0 as we almost always want the client to come back
-    immediately after fired.
-    """
-    duration = attr.ib(default=0)
-    timeout = attr.ib(default=0)
+    pass
 
 
 class CpSubscribe(CpFire):
-    def __init__(self, topics: List[Tuple[str, int]], duration: float=0,
-                 timeout: float=0):
+    def __init__(self, topics: List[Tuple[str, int]]):
         """
         :param topics: list of (topic, qos)
         :param duration:
         """
-        super().__init__(duration=duration, timeout=timeout)
+        super().__init__()
         for _, qos in topics:
             if qos < 0 or qos > 2:
                 raise CgCompanionException('invalid qos {}'.format(qos))
@@ -57,9 +44,8 @@ class CpSubscribe(CpFire):
 
 
 class CpPublish(CpFire):
-    def __init__(self, topic: str, msg: bytes, qos: int=0, retain: bool=False,
-                 duration: float=0, timeout: float=0):
-        super().__init__(duration=duration, timeout=timeout)
+    def __init__(self, topic: str, msg: bytes, qos: int=0, retain: bool=False):
+        super().__init__()
         if qos < 0 or qos > 2:
             raise CgCompanionException('invalid qos {}'.format(qos))
         self.topic = topic
@@ -67,25 +53,20 @@ class CpPublish(CpFire):
         self.qos = qos
         self.retain = retain
 
+"""
+CpTerminate: no more companion.ask but keep companion.receive
+CpDisconnect: disconnect then CpTerminate
+
+NOTE: unless disconnect, the connection is not aborted.
+"""
+
 
 class CpDisconnect(CpFire):
-    """
-    Won't come back to ask. Client will Disconnect.
-    """
-    def __init__(self, duration: float=0, timeout: float=0):
-        super().__init__(duration=duration, timeout=timeout)
+    pass
 
 
 class CpTerminate(CpCmd):
-    """
-    """
-    def __init__(self):
-        pass
-
-
-class CpIdle(CpCmd):
-    def __init__(self):
-        pass
+    pass
 
 
 @attr.s
@@ -286,175 +267,6 @@ class LinearPublisher(Companion):
                          qos=self.qos, retain=self.retain)
 
 
-@logged
-class OneShotSubscriber(Companion):
-    """
-    OneShotSubscriber, after 'delay' secs, subscribes a number of topics and
-    listens for them for 'duration' secs.
-
-    duration == 0 means infinite
-    """
-    def __init__(self, namespace, plugin_name, name, config,
-                 loop: BaseEventLoop = None):
-        super().__init__(namespace, plugin_name, name, config, loop)
-        # parameters required
-        try:
-            self.topics = []
-            topics = config.get('topics')
-            if not topics:
-                topics = [{
-                    'topic': config['topic'],
-                    'qos': config.get('qos', 0)
-                }]
-
-            for x in topics:
-                topic = x.get('topic')
-                qos = x.get('qos')
-                if not topic or qos < 0 or qos > 2:
-                    raise CgCompanionException('invalid topic, qos: {}, {}'.
-                                               format(topic, qos))
-                self.topics.append((topic, qos))
-        except CgCompanionException as e:
-            raise e
-        except Exception as e:
-            raise CgCompanionException from e
-
-        # parameters optional
-        self.delay = config.get('delay', 0)
-        self.duration = config.get('duration', 0)
-        self.__log.debug('{} args: delay={}, duration={}, topics={}'.
-                  format(self.name, self.delay, self.duration, self.topics))
-        # stateful
-        self.subscribed = False
-        self.duration_past = False
-
-    async def ask(self, resp: CpResp = None) -> CpCmd:
-        if self.delay > 0:
-            self.__log.debug('Idle for {}'.format(self.delay))
-            i = self.delay
-            self.delay = 0
-            return CpIdle(duration=i)
-
-        if not self.subscribed:
-            self.subscribed = True
-            return CpSubscribe(self.topics)
-
-        if self.duration <= 0:
-            # CgClient won't come back to ask, but can keep receiving messages
-            return CpIdle(duration=0.)
-
-        if self.duration_past:
-            return CpTerminate()
-
-        self.duration_past = True
-        return CpIdle(duration=self.duration)
-
-
-
-@logged
-class SimpleSub(Companion):
-    states = ['created', 'delaying', 'subscribing', 'receiving', 'done']
-
-    """
-    SimpleSub, after 'delay' secs, subscribes a number of topics and
-    listens for them for 'duration' secs.
-
-    duration == 0 means infinite
-    """
-    def __init__(self, namespace, plugin_name, name, config,
-                 loop: BaseEventLoop = None):
-        try:
-            super().__init__(namespace, plugin_name, name, config, loop)
-            self.topics = []
-            topics = config.get('topics')
-            if not topics:
-                topics = [{
-                    'topic': config['topic'],
-                    'qos': config.get('qos', 0)
-                }]
-
-            for x in topics:
-                topic = x.get('topic')
-                qos = x.get('qos')
-                if not topic or qos < 0 or qos > 2:
-                    raise CgCompanionException('invalid topic, qos: {}, {}'.
-                                               format(topic, qos))
-                self.topics.append((topic, qos))
-
-            # parameters optional
-            self.delay = get_delay(config)
-
-            # criteria to terminate
-            self.duration = config.get('duration', -1)
-            # TODO: terminate if some number of msgs received
-
-            # only in use if duration > 0
-            self.auto_disconnect = config.get('auto_disconnect', True)
-            self.__log.debug('{} args: delay={}, duration={}, topics={}'.
-                             format(self.name, self.delay, self.duration,
-                                    self.topics))
-            # stateful
-            self.machine = Machine(model=self, states=SimpleSub.states,
-                                   initial='created')
-            self.machine.add_ordered_transitions(['created', 'delaying',
-                                                  'subscribing', 'receiving'],
-                                                 loop=False)
-            self.machine.add_transition(trigger='next_state',
-                                        source='receiving',
-                                        dest='receiving',
-                                        unless='is_done',
-                                        after='keep_receiving')
-            self.machine.add_transition(trigger='next_state',
-                                        source='receiving',
-                                        dest='done',
-                                        condition='is_done')
-
-            self.cp_cmd = None
-            self.duration_start_t = 0
-
-        except CgCompanionException as e:
-            raise e
-        except Exception as e:
-            raise CgCompanionException from e
-
-    def on_enter_delaying(self):
-        if self.delay > 0:
-            self.cp_cmd = CpIdle(duration=self.delay)
-        else:
-            self.machine.next()
-
-    def on_enter_subscribing(self):
-        self.cp_cmd = CpSubscribe(self.topics)
-
-    def on_exit_subscribing(self):
-        self.duration_start_t = self.loop.time()
-
-    def on_enter_receiving(self):
-        if self.duration >= 0:
-            now = self.loop.time()
-            self.cp_cmd = CpIdle(max(
-                now - self.duration_start_t - self.duration, 0))
-        else:
-            self.machine.next_state()
-
-    def on_enter_done(self):
-        if self.auto_disconnect:
-            self.cp_cmd = CpDisconnect()
-        else:
-            self.cp_cmd = CpTerminate()
-
-    def is_done(self):
-        if self.duration >= 0:
-            now = self.loop.time()
-            if now - self.duration_start_t - self.duration > 0:
-                return True
-        if self.received_count >= self.expect >= 0:
-            return True
-        return False
-
-    async def ask(self, resp: CpResp = None) -> CpCmd:
-        self.machine.next_state()
-        return self.cp_cmd
 
 
 

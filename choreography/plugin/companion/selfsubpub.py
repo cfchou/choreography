@@ -7,7 +7,7 @@ from choreography.cg_util import gen_client_id, get_delay, lorem_ipsum
 from choreography.plugin.step import StepModel, StepModelResponder
 from choreography.cg_companion import Companion, CgCompanionException
 from choreography.cg_companion import CpResp, CpFireResp, CpCmd
-from choreography.cg_companion import CpIdle, CpTerminate, CpDisconnect
+from choreography.cg_companion import CpTerminate, CpDisconnect
 from choreography.cg_companion import CpSubscribe, CpPublish
 import asyncio
 import attr
