@@ -1,7 +1,7 @@
 # vim:fileencoding=utf-8
 
 
-from hbmqtt.client import MQTTClient, ClientException
+from hbmqtt.client import MQTTClient, ClientException, ConnectException
 from hbmqtt.errors import HBMQTTException
 from hbmqtt.client import mqtt_connected
 from choreography.cg_util import gen_client_id
@@ -9,8 +9,7 @@ import choreography.cg_util
 from choreography.cg_metrics import *
 from choreography.cg_exception import *
 import functools
-import asyncio
-from asyncio import BaseEventLoop
+from asyncio import BaseEventLoop, Event
 from autologging import logged
 
 @logged
@@ -47,6 +46,7 @@ class CgClient(MQTTClient):
             client_id = gen_client_id()
         #super().__init__(client_id, default_config, loop)
         super().__init__(client_id, config, loop)
+        self._disconnected_event = Event()
 
     def get_loop(self):
         return self._loop
@@ -64,8 +64,19 @@ class CgClient(MQTTClient):
                                         cadata)
             connections_total.inc()
             return ret
-        except ClientException as e:
-            self.__log.exception(e)
+        except CgClientException as e:
+            # raised by overwritten reconnect()
+            assert self._disconnected_event.is_set()
+            raise e
+        except (BaseException, Exception) as e:
+            self._disconnected_event.set()
+            raise from e
+
+    async def reconnect(self, cleansession=None):
+        try:
+            super().reconnect(cleansession)
+        except ConnectException as e:
+            self._disconnected_event.set()
             raise CgClientException from e
 
     @time(connect_hist)
@@ -75,13 +86,20 @@ class CgClient(MQTTClient):
     async def handle_connection_close(self):
         try:
             ret = await super().handle_connection_close()
+            # super.handle_connection_close swallowed ConnectException
             if not self.is_connected():
-                # disconnect passively
+                self._disconnected_event.set()
                 connections_total.dec()
             return ret
-        except (HBMQTTException, ClientException, Exception) as e:
-            raise CgClientException from e
+        except CgClientException as e:
+            # raised by overwritten reconnect()
+            assert self._disconnected_event.is_set()
+            raise e
+        except (BaseException, Exception) as e:
+            self._disconnected_event.set()
+            raise from e
 
+=========================================
     async def deliver_message(self, timeout=None):
         try:
             if not self._connected_state.is_set():
